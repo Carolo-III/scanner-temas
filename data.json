@@ -1,0 +1,52 @@
+{
+  "timestamp": "01/06/2026 02:00",
+  "mode": "Ejemplo — ejecuta Colab para actualizar",
+  "groups": [
+    {
+      "group": "Infraestructura AI", "score": 61.2, "rs_mean": 8.3, "breakouts": 2, "n": 7, "is_sp": false,
+      "top3": [
+        {"ticker":"ANET","score":74.1,"breakout":true},
+        {"ticker":"VRT","score":68.5,"breakout":true},
+        {"ticker":"APLD","score":55.2,"breakout":false}
+      ],
+      "members": [
+        {"ticker":"ANET","rs_4w":12.1,"rs_13w":18.3,"vol_z":2.1,"ma20":true,"ma50":true,"ma200":true,"score":74.1,"breakout":true,"days_ago":3,"group":"Infraestructura AI"},
+        {"ticker":"VRT","rs_4w":9.8,"rs_13w":14.2,"vol_z":1.8,"ma20":true,"ma50":true,"ma200":true,"score":68.5,"breakout":true,"days_ago":5,"group":"Infraestructura AI"},
+        {"ticker":"APLD","rs_4w":6.2,"rs_13w":9.1,"vol_z":0.9,"ma20":true,"ma50":true,"ma200":false,"score":55.2,"breakout":false,"days_ago":null,"group":"Infraestructura AI"},
+        {"ticker":"CORZ","rs_4w":4.1,"rs_13w":7.3,"vol_z":0.5,"ma20":true,"ma50":false,"ma200":false,"score":48.3,"breakout":false,"days_ago":null,"group":"Infraestructura AI"},
+        {"ticker":"IREN","rs_4w":2.3,"rs_13w":5.1,"vol_z":0.2,"ma20":false,"ma50":false,"ma200":false,"score":41.0,"breakout":false,"days_ago":null,"group":"Infraestructura AI"},
+        {"ticker":"CIFR","rs_4w":1.1,"rs_13w":3.2,"vol_z":-0.1,"ma20":false,"ma50":false,"ma200":false,"score":38.5,"breakout":false,"days_ago":null,"group":"Infraestructura AI"},
+        {"ticker":"CRWV","rs_4w":-3.2,"rs_13w":-8.1,"vol_z":-0.5,"ma20":false,"ma50":false,"ma200":false,"score":22.1,"breakout":false,"days_ago":null,"group":"Infraestructura AI"}
+      ]
+    },
+    {
+      "group": "Espacio y Defensa", "score": 55.8, "rs_mean": 7.1, "breakouts": 1, "n": 5, "is_sp": false,
+      "top3": [
+        {"ticker":"RKLB","score":72.3,"breakout":true},
+        {"ticker":"ASTS","score":58.1,"breakout":false},
+        {"ticker":"KTOS","score":51.2,"breakout":false}
+      ],
+      "members": [
+        {"ticker":"RKLB","rs_4w":11.2,"rs_13w":16.8,"vol_z":2.3,"ma20":true,"ma50":true,"ma200":true,"score":72.3,"breakout":true,"days_ago":2,"group":"Espacio y Defensa"},
+        {"ticker":"ASTS","rs_4w":7.3,"rs_13w":11.1,"vol_z":1.1,"ma20":true,"ma50":true,"ma200":false,"score":58.1,"breakout":false,"days_ago":null,"group":"Espacio y Defensa"},
+        {"ticker":"KTOS","rs_4w":5.1,"rs_13w":8.3,"vol_z":0.7,"ma20":true,"ma50":true,"ma200":false,"score":51.2,"breakout":false,"days_ago":null,"group":"Espacio y Defensa"},
+        {"ticker":"BWXT","rs_4w":3.2,"rs_13w":6.1,"vol_z":0.3,"ma20":true,"ma50":false,"ma200":false,"score":44.1,"breakout":false,"days_ago":null,"group":"Espacio y Defensa"},
+        {"ticker":"LUNR","rs_4w":1.1,"rs_13w":2.3,"vol_z":-0.2,"ma20":false,"ma50":false,"ma200":false,"score":35.1,"breakout":false,"days_ago":null,"group":"Espacio y Defensa"}
+      ]
+    }
+  ],
+  "values": [
+    {"ticker":"ANET","group":"Infraestructura AI","rs_4w":12.1,"rs_13w":18.3,"vol_z":2.1,"ma20":true,"ma50":true,"ma200":true,"score":74.1,"breakout":true,"days_ago":3},
+    {"ticker":"RKLB","group":"Espacio y Defensa","rs_4w":11.2,"rs_13w":16.8,"vol_z":2.3,"ma20":true,"ma50":true,"ma200":true,"score":72.3,"breakout":true,"days_ago":2},
+    {"ticker":"VRT","group":"Infraestructura AI","rs_4w":9.8,"rs_13w":14.2,"vol_z":1.8,"ma20":true,"ma50":true,"ma200":true,"score":68.5,"breakout":true,"days_ago":5},
+    {"ticker":"ASTS","group":"Espacio y Defensa","rs_4w":7.3,"rs_13w":11.1,"vol_z":1.1,"ma20":true,"ma50":true,"ma200":false,"score":58.1,"breakout":false,"days_ago":null},
+    {"ticker":"APLD","group":"Infraestructura AI","rs_4w":6.2,"rs_13w":9.1,"vol_z":0.9,"ma20":true,"ma50":true,"ma200":false,"score":55.2,"breakout":false,"days_ago":null},
+    {"ticker":"KTOS","group":"Espacio y Defensa","rs_4w":5.1,"rs_13w":8.3,"vol_z":0.7,"ma20":true,"ma50":true,"ma200":false,"score":51.2,"breakout":false,"days_ago":null},
+    {"ticker":"CORZ","group":"Infraestructura AI","rs_4w":4.1,"rs_13w":7.3,"vol_z":0.5,"ma20":true,"ma50":false,"ma200":false,"score":48.3,"breakout":false,"days_ago":null},
+    {"ticker":"BWXT","group":"Espacio y Defensa","rs_4w":3.2,"rs_13w":6.1,"vol_z":0.3,"ma20":true,"ma50":false,"ma200":false,"score":44.1,"breakout":false,"days_ago":null},
+    {"ticker":"IREN","group":"Infraestructura AI","rs_4w":2.3,"rs_13w":5.1,"vol_z":0.2,"ma20":false,"ma50":false,"ma200":false,"score":41.0,"breakout":false,"days_ago":null},
+    {"ticker":"CIFR","group":"Infraestructura AI","rs_4w":1.1,"rs_13w":3.2,"vol_z":-0.1,"ma20":false,"ma50":false,"ma200":false,"score":38.5,"breakout":false,"days_ago":null},
+    {"ticker":"LUNR","group":"Espacio y Defensa","rs_4w":1.1,"rs_13w":2.3,"vol_z":-0.2,"ma20":false,"ma50":false,"ma200":false,"score":35.1,"breakout":false,"days_ago":null},
+    {"ticker":"CRWV","group":"Infraestructura AI","rs_4w":-3.2,"rs_13w":-8.1,"vol_z":-0.5,"ma20":false,"ma50":false,"ma200":false,"score":22.1,"breakout":false,"days_ago":null}
+  ]
+}

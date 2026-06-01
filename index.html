@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scanner · Temas Emergentes</title>
+<style>
+:root{--g:#F0B429;--gr:#06D6A0;--r:#EF476F;--b:#3ABDE8;--bg:#080E1A;--bg2:#0D1626;--t:#E8EDF5;--d:#8A9BB5}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:16px;padding-bottom:60px}
+.hdr{background:linear-gradient(135deg,#060D1A,#0E1E38);border-bottom:2px solid var(--g);padding:16px;position:sticky;top:0;z-index:100}
+.ht{display:flex;justify-content:space-between;align-items:flex-start}
+.ht h1{font-size:22px;font-weight:900;color:white;letter-spacing:1px}
+.ht h1 span{color:var(--g)}
+.hts{font-size:11px;color:var(--d);margin-top:3px}
+.hm{font-size:11px;color:var(--g);background:rgba(240,180,41,.1);border:1px solid rgba(240,180,41,.25);border-radius:5px;padding:3px 8px}
+.tabs{display:flex;gap:4px;margin-top:10px}
+.tab{flex:1;padding:10px 2px;border:1px solid rgba(58,189,232,.2);background:transparent;color:var(--d);border-radius:7px;font-size:14px;cursor:pointer;text-align:center}
+.tab.on{background:rgba(240,180,41,.12);border-color:rgba(240,180,41,.3);color:var(--g);font-weight:700}
+.main{padding:12px}
+.panel{display:none}.panel.on{display:block}
+
+/* CARGANDO */
+.loading{text-align:center;padding:60px 20px;color:var(--d)}
+.loading b{display:block;font-size:20px;color:var(--g);margin-bottom:8px}
+
+/* SUMMARY */
+.ss{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}
+.sv{background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:9px;padding:10px 4px;text-align:center}
+.sn{font-size:24px;font-weight:900;line-height:1;margin-bottom:2px}
+.sl{font-size:10px;color:var(--d);letter-spacing:1px;text-transform:uppercase}
+.sh{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--g);margin:14px 0 8px}
+
+/* GRUPOS */
+.gc{background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:13px;margin-bottom:8px;overflow:hidden}
+.gh{display:flex;justify-content:space-between;align-items:center;padding:14px 12px;cursor:pointer;gap:8px}
+.gl{display:flex;gap:10px;align-items:flex-start;flex:1;min-width:0}
+.rn{font-size:26px;font-weight:900;color:var(--d);line-height:1;min-width:30px;flex-shrink:0}
+.gt{font-size:14px;font-weight:700;margin-bottom:2px}
+.gm{font-size:11px;color:var(--d);margin-bottom:5px}
+.lr{font-size:12px;color:var(--t)}
+.gr{display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0}
+.sc{width:46px;height:46px;border-radius:50%;border:2px solid;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:900}
+.cv{font-size:11px;color:var(--d)}
+.gd{display:none;border-top:1px solid rgba(255,255,255,.06);padding:12px;overflow-x:auto}
+.gd.op{display:block}
+.tt2{width:100%;border-collapse:collapse;font-size:13px}
+.tt2 th{font-size:10px;color:var(--d);text-transform:uppercase;padding:6px 4px;border-bottom:1px solid rgba(255,255,255,.08);text-align:right;white-space:nowrap}
+.tt2 th:first-child{text-align:left}
+.tt2 td{padding:6px 4px;border-bottom:1px solid rgba(255,255,255,.04)}
+.tt2 tr:last-child td{border-bottom:none}
+.ttt{font-weight:700;white-space:nowrap}
+.tn{text-align:right;white-space:nowrap}
+
+/* RUPTURAS */
+.ab{background:var(--bg2);border:1px solid rgba(6,214,160,.2);border-radius:11px;padding:12px;margin-bottom:12px}
+.ai{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.ai:last-child{border-bottom:none}
+.at{font-weight:700;font-size:15px;color:var(--gr);min-width:52px}
+.ain{flex:1}.ain b{display:block;font-size:13px}.ain small{font-size:11px;color:var(--d)}
+
+/* MANUAL */
+.man-section{margin-top:28px}
+.man-section h2{font-size:18px;font-weight:900;color:var(--g);border-bottom:1px solid rgba(240,180,41,.2);padding-bottom:8px;margin-bottom:14px}
+.man-section h3{font-size:15px;font-weight:700;color:var(--b);margin:18px 0 8px}
+.man-section p{margin-bottom:12px;color:var(--t);font-size:15px;line-height:1.7}
+.note{background:var(--bg2);border-left:3px solid var(--g);border-radius:0 8px 8px 0;padding:12px 14px;margin:12px 0;font-size:14px;color:var(--d);line-height:1.6}
+.warn{background:rgba(239,71,111,.08);border-left:3px solid var(--r);border-radius:0 8px 8px 0;padding:12px 14px;margin:12px 0;font-size:14px;color:var(--d);line-height:1.6}
+.good{background:rgba(6,214,160,.08);border-left:3px solid var(--gr);border-radius:0 8px 8px 0;padding:12px 14px;margin:12px 0;font-size:14px;color:var(--d);line-height:1.6}
+.metric-card{background:var(--bg2);border:1px solid rgba(240,180,41,.15);border-radius:10px;padding:14px;margin-bottom:10px}
+.metric-name{font-size:14px;font-weight:700;color:var(--g);margin-bottom:3px}
+.metric-weight{font-size:11px;color:var(--b);margin-bottom:8px}
+.metric-desc{font-size:13px;color:var(--d);line-height:1.6}
+.score-table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+.score-table th{background:var(--bg2);color:var(--d);font-size:11px;text-transform:uppercase;letter-spacing:1px;padding:8px 10px;text-align:left;border-bottom:1px solid rgba(255,255,255,.08)}
+.score-table td{padding:10px;border-bottom:1px solid rgba(255,255,255,.05);vertical-align:top;line-height:1.5}
+.score-table tr:last-child td{border-bottom:none}
+.cdot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.step{display:flex;gap:12px;margin-bottom:16px;align-items:flex-start}
+.step-num{background:var(--g);color:#000;font-weight:900;font-size:14px;min-width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
+.step-text{font-size:15px;color:var(--t);line-height:1.6}
+.faq-item{background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:10px;margin-bottom:8px;overflow:hidden}
+.faq-q{padding:14px;font-weight:700;font-size:15px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;color:var(--t)}
+.faq-a{display:none;padding:0 14px 14px;font-size:14px;color:var(--d);line-height:1.7}
+.faq-a.open{display:block}
+
+.foot{text-align:center;padding:20px;font-size:11px;color:var(--d);border-top:1px solid rgba(255,255,255,.06);margin-top:40px}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="ht">
+    <div>
+      <h1>TEMAS <span>EMERGENTES</span></h1>
+      <div class="hts" id="ts">Cargando datos...</div>
+    </div>
+    <div class="hm" id="ml">—</div>
+  </div>
+  <div class="tabs">
+    <button class="tab on" id="btn-temas"    onclick="sp('temas')">Temas</button>
+    <button class="tab"    id="btn-valores"  onclick="sp('valores')">Valores</button>
+    <button class="tab"    id="btn-rupturas" onclick="sp('rupturas')">Rupturas</button>
+    <button class="tab"    id="btn-manual"   onclick="sp('manual')">Manual</button>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- TEMAS -->
+  <div id="p-temas" class="panel on">
+    <div class="ss">
+      <div class="sv"><div class="sn" id="n-temas" style="color:var(--g)">—</div><div class="sl">Temas</div></div>
+      <div class="sv"><div class="sn" id="n-vals">—</div><div class="sl">Valores</div></div>
+      <div class="sv"><div class="sn" id="n-rups" style="color:var(--gr)">—</div><div class="sl">Rupturas</div></div>
+      <div class="sv"><div class="sn" id="n-score" style="color:var(--b)">—</div><div class="sl">Score</div></div>
+    </div>
+    <div class="sh">Temas por fuerza</div>
+    <div id="cards-container">
+      <div class="loading"><b>Cargando datos...</b>Espera un momento</div>
+    </div>
+  </div>
+
+  <!-- VALORES -->
+  <div id="p-valores" class="panel">
+    <div class="sh">Todos los valores por score</div>
+    <div style="overflow-x:auto;background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:11px;padding:10px">
+      <table class="tt2">
+        <thead><tr>
+          <th style="text-align:left">Val</th>
+          <th style="text-align:left">Tema</th>
+          <th>RS4s</th><th>RS13s</th><th>Vols</th><th>MAs</th><th>Sc</th>
+        </tr></thead>
+        <tbody id="vals-body"><tr><td colspan="7" style="text-align:center;color:var(--d);padding:20px">Cargando...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- RUPTURAS -->
+  <div id="p-rupturas" class="panel">
+    <div class="sh">Rupturas activas</div>
+    <div class="ab" id="rup-container">
+      <p style="color:var(--d);text-align:center;padding:16px">Cargando...</p>
+    </div>
+  </div>
+
+  <!-- MANUAL -->
+  <div id="p-manual" class="panel">
+
+    <div class="man-section">
+      <h2>Qué es este dashboard</h2>
+      <p>El Scanner de Temas Emergentes analiza cada noche el comportamiento de los valores del S&P 500 y de la watchlist personal para detectar dónde está fluyendo el dinero institucional antes de que lo note la mayoría.</p>
+      <p>No es un sistema de compra automática. Es una herramienta de filtrado y priorización: indica qué temas y sectores están ganando fuerza técnica para concentrar el análisis ahí.</p>
+      <div class="note">Datos: Yahoo Finance, cierre del día anterior. Los datos se actualizan cada vez que se ejecuta el notebook en Google Colab.</div>
+    </div>
+
+    <div class="man-section">
+      <h2>Las cuatro pestañas</h2>
+      <h3>Temas</h3>
+      <p>Vista principal. Grupos temáticos ordenados por score. Cada tarjeta muestra el ranking, número de valores, fuerza relativa media, los 3 líderes y el score en el círculo de la derecha. Pulsa cualquier tarjeta para ver la tabla completa del grupo.</p>
+      <h3>Valores</h3>
+      <p>Tabla plana con todos los valores analizados ordenados por score. Útil para encontrar los mejores valores del universo completo de un vistazo.</p>
+      <h3>Rupturas</h3>
+      <p>Valores que han superado una base de consolidación en las últimas 10 sesiones con volumen significativo. Son las alertas de mayor urgencia.</p>
+      <h3>Manual</h3>
+      <p>Esta guía.</p>
+    </div>
+
+    <div class="man-section">
+      <h2>El Score (0–100)</h2>
+      <table class="score-table">
+        <thead><tr><th>Score</th><th>Significado</th><th>Qué hacer</th></tr></thead>
+        <tbody>
+          <tr><td><span class="cdot" style="background:#06D6A0"></span><b style="color:#06D6A0">70–100</b></td><td>Tema muy fuerte. Momentum claro.</td><td>Analizar en profundidad. Buscar el líder.</td></tr>
+          <tr><td><span class="cdot" style="background:#F0B429"></span><b style="color:#F0B429">50–69</b></td><td>Tema emergente. Señales positivas sin confirmación plena.</td><td>Seguimiento activo. Esperar confirmación de volumen.</td></tr>
+          <tr><td><span class="cdot" style="background:#FB923C"></span><b style="color:#FB923C">30–49</b></td><td>Señal débil. Sin cohesión del grupo.</td><td>Watchlist pasiva. No priorizar.</td></tr>
+          <tr><td><span class="cdot" style="background:#EF476F"></span><b style="color:#EF476F">0–29</b></td><td>Sin momentum.</td><td>Ignorar hasta nuevo aviso.</td></tr>
+        </tbody>
+      </table>
+      <div class="warn">Un score alto no es una señal de compra. Es un punto de partida para análisis. Siempre verifica el gráfico y tu gestión de riesgo antes de operar.</div>
+    </div>
+
+    <div class="man-section">
+      <h2>Las 5 métricas</h2>
+      <div class="metric-card">
+        <div class="metric-name">RS 4 semanas</div>
+        <div class="metric-weight">Peso: 30%</div>
+        <div class="metric-desc">Rendimiento del valor vs SPY en las últimas 4 semanas. Positivo = ha subido más (o caído menos) que el mercado. Detecta momentum reciente.</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-name">RS 13 semanas</div>
+        <div class="metric-weight">Peso: 20%</div>
+        <div class="metric-desc">Lo mismo a 3 meses. Confirma que la fuerza relativa es una tendencia sostenida, no un spike puntual.</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-name">Volumen σ (sigma)</div>
+        <div class="metric-weight">Peso: 25%</div>
+        <div class="metric-desc">Z-score del volumen actual vs media de 20 sesiones. Un valor de 2s significa que el volumen dobla la media — señal de participación institucional. Por encima de 1.5s es relevante.</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-name">Ruptura de base</div>
+        <div class="metric-weight">Peso: 15%</div>
+        <div class="metric-desc">El precio ha superado el máximo de una consolidación de 50 sesiones con volumen superior a 1.4 veces la media de la base. Se marca con * junto al ticker.</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-name">Salud de medias móviles</div>
+        <div class="metric-weight">Peso: 10%</div>
+        <div class="metric-desc">Si el precio está por encima de MM20, MM50 y MM200. Aparece como tres letras: YYY = por encima de las tres, YYN = por encima de MM20 y MM50 pero no MM200, etc.</div>
+      </div>
+    </div>
+
+    <div class="man-section">
+      <h2>Cómo usarlo cada noche</h2>
+      <div class="step"><div class="step-num">1</div><div class="step-text">Mira el ranking de Temas. ¿Qué temas tienen score verde? ¿Han subido o bajado posiciones respecto al día anterior?</div></div>
+      <div class="step"><div class="step-num">2</div><div class="step-text">Revisa Rupturas. Valores con * y score alto son candidatos prioritarios.</div></div>
+      <div class="step"><div class="step-num">3</div><div class="step-text">Abre la tarjeta del tema más fuerte. El valor con score más alto es el líder. Opera el líder, no el segundo.</div></div>
+      <div class="step"><div class="step-num">4</div><div class="step-text">Verifica en el gráfico real. El dashboard dice dónde mirar, no qué comprar.</div></div>
+      <div class="step"><div class="step-num">5</div><div class="step-text">Descarta los temas rojos. Score menor de 30 significa sin momentum ahora.</div></div>
+      <div class="good">Regla de oro: tema más fuerte → valor líder → entrada con volumen confirmado. En ese orden, siempre.</div>
+    </div>
+
+    <div class="man-section">
+      <h2>Preguntas frecuentes</h2>
+      <div class="faq-item">
+        <div class="faq-q" onclick="faq(this)">¿Con qué frecuencia ejecutar el scanner? <span>▼</span></div>
+        <div class="faq-a">Una vez al día, por la noche tras el cierre del mercado americano (después de las 22:00h hora española). Los datos de Yahoo Finance se actualizan con el cierre de cada sesión.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="faq(this)">¿Por qué un tema que ayer era #1 hoy es #4? <span>▼</span></div>
+        <div class="faq-a">El score cambia cada día reflejando el mercado real. Una caída de posiciones puede indicar rotación — el dinero está saliendo de ese tema. Es información valiosa, no un error.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="faq(this)">¿Celda 3 o Celda 4 en Colab? <span>▼</span></div>
+        <div class="faq-a">La Celda 3 analiza solo la watchlist personal (~30 seg). La Celda 4 analiza el S&P 500 completo (~4 min). Para el seguimiento diario rápido usa la Celda 3. La Celda 4 es para descubrir oportunidades fuera de la watchlist.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="faq(this)">¿Por qué algunos valores no aparecen? <span>▼</span></div>
+        <div class="faq-a">Yahoo Finance a veces no devuelve datos para algunos tickers en descargas masivas. Si un valor falla consistentemente, añádelo manualmente a la watchlist personal en la Celda 2.</div>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q" onclick="faq(this)">¿Cómo añadir valores a la watchlist? <span>▼</span></div>
+        <div class="faq-a">En la Celda 2 del notebook, edita el diccionario PERSONAL_WATCHLIST. Añade el nombre del tema y la lista de tickers: 'Mi tema': ['AAPL', 'MSFT'].</div>
+      </div>
+    </div>
+
+    <div class="warn" style="margin-top:24px">Este sistema es una herramienta de análisis personal, no asesoramiento financiero. Todas las decisiones de inversión son responsabilidad exclusiva del usuario.</div>
+
+  </div><!-- /manual -->
+
+</div><!-- /main -->
+
+<div class="foot">Scanner de Temas Emergentes · Datos: Yahoo Finance EOD · Uso personal</div>
+
+<script>
+// ── Navegación pestañas ──
+function sp(n) {
+  document.querySelectorAll('.panel').forEach(function(p){ p.classList.remove('on'); });
+  document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('on'); });
+  document.getElementById('p-' + n).classList.add('on');
+  document.getElementById('btn-' + n).classList.add('on');
+}
+
+// ── Expandir tarjeta ──
+function tog(h) {
+  var d = h.nextElementSibling;
+  var o = d.classList.contains('op');
+  document.querySelectorAll('.gd').forEach(function(x){ x.classList.remove('op'); });
+  document.querySelectorAll('.gh').forEach(function(x){ x.classList.remove('op'); });
+  if (!o) { d.classList.add('op'); h.classList.add('op'); }
+}
+
+// ── FAQ ──
+function faq(el) {
+  var a = el.nextElementSibling;
+  var isOpen = a.classList.contains('open');
+  document.querySelectorAll('.faq-a').forEach(function(x){ x.classList.remove('open'); });
+  document.querySelectorAll('.faq-q span').forEach(function(x){ x.textContent = '▼'; });
+  if (!isOpen) { a.classList.add('open'); el.querySelector('span').textContent = '▲'; }
+}
+
+// ── Colores ──
+function sc(s) {
+  if (s >= 70) return '#06D6A0';
+  if (s >= 50) return '#F0B429';
+  if (s >= 30) return '#FB923C';
+  return '#EF476F';
+}
+function vc(v) {
+  if (v === null || v === undefined) return '#8A9BB5';
+  if (v >= 10) return '#06D6A0';
+  if (v >= 0)  return '#F0B429';
+  return '#EF476F';
+}
+function fmtS(v) {
+  if (v === null || v === undefined) return '-';
+  return (v >= 0 ? '+' : '') + v.toFixed(1);
+}
+function fmtP(v) {
+  if (v === null || v === undefined) return '-';
+  return v.toFixed(1);
+}
+function maStr(m) {
+  return (m.ma20 ? 'Y' : 'N') + (m.ma50 ? 'Y' : 'N') + (m.ma200 ? 'Y' : 'N');
+}
+
+// ── Cargar datos desde data.json ──
+fetch('data.json?t=' + Date.now())
+  .then(function(r){ return r.json(); })
+  .then(function(data){ renderAll(data); })
+  .catch(function(){ 
+    document.getElementById('cards-container').innerHTML = 
+      '<div class="loading"><b>Sin datos todavía</b>Ejecuta el notebook en Colab para generar el dashboard.</div>';
+  });
+
+function renderAll(data) {
+  // Header
+  document.getElementById('ts').textContent = 'Actualizado: ' + data.timestamp;
+  document.getElementById('ml').textContent = data.mode;
+
+  var ar = data.values;
+  var allG = data.groups;
+  var bos = ar.filter(function(r){ return r.breakout; }).sort(function(a,b){ return (b.score||0)-(a.score||0); });
+
+  // Summary
+  document.getElementById('n-temas').textContent = allG.length;
+  document.getElementById('n-vals').textContent  = ar.length;
+  document.getElementById('n-rups').textContent  = bos.length;
+  var sm = allG.length ? (allG.reduce(function(a,g){ return a+g.score; },0)/allG.length).toFixed(1) : '-';
+  document.getElementById('n-score').textContent = sm;
+
+  // Tarjetas
+  var cards = '';
+  allG.forEach(function(g, idx) {
+    var s = g.score; var cl = sc(s);
+    var border = g.is_sp ? '#3ABDE8' : '#F0B429';
+    var tag    = g.is_sp ? 'SP500' : 'WL';
+    var top = g.top3.map(function(m){
+      return '<b style="color:' + sc(m.score) + '">' + m.ticker + (m.breakout?'*':'') + '</b>(' + fmtP(m.score) + ')';
+    }).join('  ');
+    var rows = g.members.map(function(m){
+      return '<tr>' +
+        '<td class="ttt">' + m.ticker + (m.breakout?'*':'') + '</td>' +
+        '<td class="tn" style="color:' + vc(m.rs_4w)  + '">' + fmtS(m.rs_4w)  + '%</td>' +
+        '<td class="tn" style="color:' + vc(m.rs_13w) + '">' + fmtS(m.rs_13w) + '%</td>' +
+        '<td class="tn" style="color:' + vc(m.vol_z)  + '">' + fmtP(m.vol_z)  + 's</td>' +
+        '<td class="tn">' + maStr(m) + '</td>' +
+        '<td class="tn"><b style="color:' + sc(m.score) + '">' + fmtP(m.score) + '</b></td>' +
+        '</tr>';
+    }).join('');
+    cards += '<div class="gc" style="border-left:3px solid ' + border + '">' +
+      '<div class="gh" onclick="tog(this)">' +
+      '<div class="gl"><div class="rn">#' + (idx+1) + '</div>' +
+      '<div><div class="gt">' + g.group + ' <span style="color:' + border + ';font-size:10px">[' + tag + ']</span></div>' +
+      '<div class="gm">' + g.n + 'v  RS:' + fmtS(g.rs_mean) + '%  UP:' + g.breakouts + '</div>' +
+      '<div class="lr">' + top + '</div></div></div>' +
+      '<div class="gr"><div class="sc" style="border-color:' + cl + ';color:' + cl + '">' + s + '</div>' +
+      '<div class="cv">▼</div></div></div>' +
+      '<div class="gd"><table class="tt2"><thead><tr>' +
+      '<th style="text-align:left">Val</th><th>RS4s</th><th>RS13s</th><th>Vols</th><th>MAs</th><th>Sc</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+  });
+  document.getElementById('cards-container').innerHTML = cards;
+
+  // Valores
+  var vrows = ar.map(function(m){
+    return '<tr>' +
+      '<td class="ttt">' + m.ticker + (m.breakout?'*':'') + '</td>' +
+      '<td class="tn" style="font-size:11px;color:var(--d)">' + m.group.substring(0,14) + '</td>' +
+      '<td class="tn" style="color:' + vc(m.rs_4w)  + '">' + fmtS(m.rs_4w)  + '%</td>' +
+      '<td class="tn" style="color:' + vc(m.rs_13w) + '">' + fmtS(m.rs_13w) + '%</td>' +
+      '<td class="tn" style="color:' + vc(m.vol_z)  + '">' + fmtP(m.vol_z)  + 's</td>' +
+      '<td class="tn">' + maStr(m) + '</td>' +
+      '<td class="tn"><b style="color:' + sc(m.score) + '">' + fmtP(m.score) + '</b></td>' +
+      '</tr>';
+  }).join('');
+  document.getElementById('vals-body').innerHTML = vrows;
+
+  // Rupturas
+  if (bos.length === 0) {
+    document.getElementById('rup-container').innerHTML = '<p style="color:var(--d);text-align:center;padding:16px">Sin rupturas activas</p>';
+  } else {
+    document.getElementById('rup-container').innerHTML = bos.slice(0,10).map(function(r){
+      return '<div class="ai">' +
+        '<div class="at">' + r.ticker + '</div>' +
+        '<div class="ain"><b>' + r.group + '</b>' +
+        '<small>Hace ' + r.days_ago + 'd  RS:' + fmtS(r.rs_4w) + '%  Vol:' + fmtP(r.vol_z) + 's</small></div>' +
+        '<div style="font-size:20px;font-weight:900;color:' + sc(r.score) + '">' + r.score + '</div>' +
+        '</div>';
+    }).join('');
+  }
+}
+</script>
+</body>
+</html>
