@@ -412,7 +412,7 @@ function renderAll(data, history) {
   document.getElementById('n-score').textContent = sm;
 
   // Barra de momentum
-  document.getElementById('momentum-bar-container').innerHTML = buildMomentumBar(allG.map(function(x){ return x[0]; }));
+  document.getElementById('momentum-bar-container').innerHTML = buildMomentumBar(allG);
 
   // Tarjetas
   var cards = '';
