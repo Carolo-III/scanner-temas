@@ -84,6 +84,12 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
 .faq-a{display:none;padding:0 14px 14px;font-size:14px;color:var(--d);line-height:1.7}
 .faq-a.open{display:block}
 
+
+.trend{display:flex;align-items:flex-end;gap:2px;height:24px;margin-top:6px}
+.trend-bar{width:6px;border-radius:2px 2px 0 0;min-height:2px;opacity:0.85}
+.rot{font-size:12px;font-weight:700;margin-left:6px;vertical-align:middle}
+.rot-up{color:#06D6A0}.rot-dn{color:#EF476F}.rot-eq{color:#8A9BB5}
+
 .foot{text-align:center;padding:20px;font-size:11px;color:var(--d);border-top:1px solid rgba(255,255,255,.06);margin-top:40px}
 </style>
 </head>
@@ -307,15 +313,47 @@ function maStr(m) {
 }
 
 // ── Cargar datos desde data.json ──
-fetch('data.json?t=' + Date.now())
-  .then(function(r){ return r.json(); })
-  .then(function(data){ renderAll(data); })
+// Cargar data.json e history.json en paralelo
+var dataPromise    = fetch('data.json?t='    + Date.now()).then(function(r){ return r.json(); });
+var historyPromise = fetch('history.json?t=' + Date.now()).then(function(r){ return r.json(); }).catch(function(){ return []; });
+
+Promise.all([dataPromise, historyPromise])
+  .then(function(results){ renderAll(results[0], results[1]); })
   .catch(function(){ 
     document.getElementById('cards-container').innerHTML = 
       '<div class="loading"><b>Sin datos todavía</b>Ejecuta el notebook en Colab para generar el dashboard.</div>';
   });
 
-function renderAll(data) {
+
+function sparkline(group, history) {
+  if (!history || history.length < 2) return '';
+  var scores = history.map(function(h){ return h.scores[group] || null; }).filter(function(s){ return s !== null; });
+  if (scores.length < 2) return '';
+  var max = Math.max.apply(null, scores);
+  var min = Math.min.apply(null, scores);
+  var range = max - min || 1;
+  var bars = scores.map(function(s, i) {
+    var h = Math.max(2, Math.round(((s - min) / range) * 22));
+    var c = i === scores.length - 1 ? sc(s) : 'rgba(255,255,255,0.2)';
+    return '<div class="trend-bar" style="height:' + h + 'px;background:' + c + '" title="' + s + '"></div>';
+  }).join('');
+  return '<div class="trend">' + bars + '</div>';
+}
+
+function rotation(group, history) {
+  if (!history || history.length < 2) return '';
+  var last    = history[history.length - 1];
+  var prev    = history[history.length - 2];
+  var rankNow  = last.ranks  && last.ranks[group]  ? last.ranks[group]  : null;
+  var rankPrev = prev.ranks  && prev.ranks[group]   ? prev.ranks[group]  : null;
+  if (rankNow === null || rankPrev === null) return '';
+  var diff = rankPrev - rankNow; // positivo = sube posiciones
+  if (diff > 0) return '<span class="rot rot-up">▲' + diff + '</span>';
+  if (diff < 0) return '<span class="rot rot-dn">▼' + Math.abs(diff) + '</span>';
+  return '<span class="rot rot-eq">—</span>';
+}
+
+function renderAll(data, history) {
   // Header
   document.getElementById('ts').textContent = 'Actualizado: ' + data.timestamp;
   document.getElementById('ml').textContent = data.mode;
@@ -355,7 +393,7 @@ function renderAll(data) {
       '<div class="gl"><div class="rn">#' + (idx+1) + '</div>' +
       '<div><div class="gt">' + g.group + ' <span style="color:' + border + ';font-size:10px">[' + tag + ']</span></div>' +
       '<div class="gm">' + g.n + 'v  RS:' + fmtS(g.rs_mean) + '%  UP:' + g.breakouts + '</div>' +
-      '<div class="lr">' + top + '</div></div></div>' +
+      '<div class="lr">' + top + rotation(g.group, history) + '</div>' + sparkline(g.group, history) + '</div></div>' +
       '<div class="gr"><div class="sc" style="border-color:' + cl + ';color:' + cl + '">' + s + '</div>' +
       '<div class="cv">▼</div></div></div>' +
       '<div class="gd"><table class="tt2"><thead><tr>' +
