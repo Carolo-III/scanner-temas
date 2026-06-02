@@ -300,7 +300,10 @@ function fmtP(v) {
   return v.toFixed(1);
 }
 function maStr(m) {
-  return (m.ma20 ? 'Y' : 'N') + (m.ma50 ? 'Y' : 'N') + (m.ma200 ? 'Y' : 'N');
+  var r20  = (m.ma20  === true || m.ma20  === 1) ? 'Y' : 'N';
+  var r50  = (m.ma50  === true || m.ma50  === 1) ? 'Y' : 'N';
+  var r200 = (m.ma200 === true || m.ma200 === 1) ? 'Y' : 'N';
+  return r20 + r50 + r200;
 }
 
 // ── Cargar datos desde data.json ──
