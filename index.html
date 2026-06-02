@@ -100,6 +100,20 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
 .rot{font-size:12px;font-weight:700;margin-left:6px;vertical-align:middle}
 .rot-up{color:#06D6A0}.rot-dn{color:#EF476F}.rot-eq{color:#8A9BB5}
 
+
+.analisis-box{background:var(--bg2);border:1px solid rgba(240,180,41,.15);border-radius:12px;padding:18px;margin-bottom:12px;white-space:pre-wrap;font-size:14px;line-height:1.8;color:var(--t)}
+.analisis-ts{font-size:11px;color:var(--d);margin-bottom:12px;font-style:italic}
+.no-analisis{text-align:center;padding:40px 20px;color:var(--d)}
+.no-analisis b{display:block;font-size:16px;color:var(--g);margin-bottom:8px}
+.entry-box{background:rgba(6,214,160,.06);border:1px solid rgba(6,214,160,.2);border-radius:8px;padding:8px 10px;margin-top:6px;font-size:11px}
+.entry-row{display:flex;justify-content:space-between;margin-bottom:3px}
+.entry-label{color:var(--d)}
+.entry-val{color:var(--t);font-weight:600;font-family:monospace}
+.entry-val.green{color:#06D6A0}
+.entry-val.red{color:#EF476F}
+.entry-val.gold{color:#F0B429}
+.vigilancia{background:rgba(240,180,41,.06);border:1px solid rgba(240,180,41,.2);border-radius:8px;padding:6px 10px;margin-top:6px;font-size:11px;color:var(--d)}
+
 .foot{text-align:center;padding:20px;font-size:11px;color:var(--d);border-top:1px solid rgba(255,255,255,.06);margin-top:40px}
 </style>
 </head>
@@ -117,6 +131,7 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
     <button class="tab on" id="btn-temas"    onclick="sp('temas')">Temas</button>
     <button class="tab"    id="btn-valores"  onclick="sp('valores')">Valores</button>
     <button class="tab"    id="btn-rupturas" onclick="sp('rupturas')">Rupturas</button>
+    <button class="tab"    id="btn-analisis" onclick="sp('analisis')">Analisis</button>
     <button class="tab"    id="btn-manual"   onclick="sp('manual')">Manual</button>
   </div>
 </div>
@@ -146,7 +161,7 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
         <thead><tr>
           <th style="text-align:left">Val</th>
           <th style="text-align:left">Tema</th>
-          <th>RS4s</th><th>RS13s</th><th>Vols</th><th>MAs</th><th>Sc</th>
+          <th>Precio</th><th>Ret1m</th><th>52s</th><th>RS4s</th><th>RS13s</th><th>Vols</th><th>MAs</th><th>Sc</th>
         </tr></thead>
         <tbody id="vals-body"><tr><td colspan="7" style="text-align:center;color:var(--d);padding:20px">Cargando...</td></tr></tbody>
       </table>
@@ -158,6 +173,14 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
     <div class="sh">Rupturas activas</div>
     <div class="ab" id="rup-container">
       <p style="color:var(--d);text-align:center;padding:16px">Cargando...</p>
+    </div>
+  </div>
+
+  <!-- ANALISIS -->
+  <div id="p-analisis" class="panel">
+    <div class="sh">Analisis del mercado</div>
+    <div id="analisis-container">
+      <div class="no-analisis"><b>Sin analisis disponible</b>Ejecuta Colab para generar el analisis con Claude.</div>
     </div>
   </div>
 
@@ -449,9 +472,15 @@ function renderAll(data, history) {
 
   // Valores
   var vrows = ar.map(function(m){
+    var p52 = m.pct_from_high !== undefined && m.pct_from_high !== null ? fmtS(m.pct_from_high)+'%' : '-';
+    var r1m = m.ret_1m !== undefined && m.ret_1m !== null ? fmtS(m.ret_1m)+'%' : '-';
+    var pr  = m.price ? '$'+m.price.toFixed(2) : '-';
     return '<tr>' +
       '<td class="ttt">' + m.ticker + (m.breakout?'*':'') + '</td>' +
       '<td class="tn" style="font-size:11px;color:var(--d)">' + m.group.substring(0,14) + '</td>' +
+      '<td class="tn">' + pr + '</td>' +
+      '<td class="tn" style="color:' + vc(m.ret_1m) + '">' + r1m + '</td>' +
+      '<td class="tn" style="color:' + vc(m.pct_from_high) + '">' + p52 + '</td>' +
       '<td class="tn" style="color:' + vc(m.rs_4w)  + '">' + fmtS(m.rs_4w)  + '%</td>' +
       '<td class="tn" style="color:' + vc(m.rs_13w) + '">' + fmtS(m.rs_13w) + '%</td>' +
       '<td class="tn" style="color:' + vc(m.vol_z)  + '">' + fmtP(m.vol_z)  + 's</td>' +
@@ -473,6 +502,12 @@ function renderAll(data, history) {
         '<div style="font-size:20px;font-weight:900;color:' + sc(r.score) + '">' + r.score + '</div>' +
         '</div>';
     }).join('');
+  }
+  // Analisis Claude
+  var ac = document.getElementById('analisis-container');
+  if (data.analisis) {
+    ac.innerHTML = '<div class="analisis-ts">Generado: ' + data.timestamp + '</div>' +
+      '<div class="analisis-box">' + data.analisis.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
   }
 }
 </script>
