@@ -85,6 +85,16 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
 .faq-a.open{display:block}
 
 
+
+.momentum-bar{background:var(--bg2);border:1px solid rgba(240,180,41,.15);border-radius:11px;padding:12px 14px;margin-bottom:12px}
+.mb-title{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--g);margin-bottom:8px}
+.mb-track{height:12px;background:rgba(255,255,255,.06);border-radius:6px;overflow:hidden;display:flex}
+.mb-seg{height:100%;transition:width .4s}
+.mb-legend{display:flex;gap:12px;margin-top:8px;flex-wrap:wrap}
+.mb-leg{font-size:11px;color:var(--d);display:flex;align-items:center;gap:4px}
+.mb-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.mb-count{font-weight:700;color:var(--t)}
+
 .trend{display:flex;align-items:flex-end;gap:2px;height:24px;margin-top:6px}
 .trend-bar{width:6px;border-radius:2px 2px 0 0;min-height:2px;opacity:0.85}
 .rot{font-size:12px;font-weight:700;margin-left:6px;vertical-align:middle}
@@ -121,7 +131,8 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
       <div class="sv"><div class="sn" id="n-rups" style="color:var(--gr)">—</div><div class="sl">Rupturas</div></div>
       <div class="sv"><div class="sn" id="n-score" style="color:var(--b)">—</div><div class="sl">Score</div></div>
     </div>
-    <div class="sh">Temas por fuerza</div>
+    <div id="momentum-bar-container"></div>
+  <div class="sh">Temas por fuerza</div>
     <div id="cards-container">
       <div class="loading"><b>Cargando datos...</b>Espera un momento</div>
     </div>
@@ -325,6 +336,37 @@ Promise.all([dataPromise, historyPromise])
   });
 
 
+
+function buildMomentumBar(groups) {
+  var strong  = groups.filter(function(g){ return g.score >= 70; }).length;
+  var medium  = groups.filter(function(g){ return g.score >= 50 && g.score < 70; }).length;
+  var weak    = groups.filter(function(g){ return g.score >= 30 && g.score < 50; }).length;
+  var none    = groups.filter(function(g){ return g.score < 30; }).length;
+  var total   = groups.length || 1;
+
+  var pStrong = (strong / total * 100).toFixed(1);
+  var pMedium = (medium / total * 100).toFixed(1);
+  var pWeak   = (weak   / total * 100).toFixed(1);
+  var pNone   = (none   / total * 100).toFixed(1);
+
+  return (
+    '<div class="momentum-bar">' +
+    '<div class="mb-title">Concentracion del Momentum — ' + total + ' temas analizados</div>' +
+    '<div class="mb-track">' +
+    '<div class="mb-seg" style="width:' + pStrong + '%;background:#06D6A0"></div>' +
+    '<div class="mb-seg" style="width:' + pMedium + '%;background:#F0B429"></div>' +
+    '<div class="mb-seg" style="width:' + pWeak   + '%;background:#FB923C"></div>' +
+    '<div class="mb-seg" style="width:' + pNone   + '%;background:#EF476F"></div>' +
+    '</div>' +
+    '<div class="mb-legend">' +
+    '<div class="mb-leg"><div class="mb-dot" style="background:#06D6A0"></div> Fuerte (70+) <b class="mb-count">' + strong + '</b></div>' +
+    '<div class="mb-leg"><div class="mb-dot" style="background:#F0B429"></div> Emergente (50-69) <b class="mb-count">' + medium + '</b></div>' +
+    '<div class="mb-leg"><div class="mb-dot" style="background:#FB923C"></div> Debil (30-49) <b class="mb-count">' + weak + '</b></div>' +
+    '<div class="mb-leg"><div class="mb-dot" style="background:#EF476F"></div> Sin momentum (&lt;30) <b class="mb-count">' + none + '</b></div>' +
+    '</div></div>'
+  );
+}
+
 function sparkline(group, history) {
   if (!history || history.length < 2) return '';
   var scores = history.map(function(h){ return h.scores[group] || null; }).filter(function(s){ return s !== null; });
@@ -368,6 +410,9 @@ function renderAll(data, history) {
   document.getElementById('n-rups').textContent  = bos.length;
   var sm = allG.length ? (allG.reduce(function(a,g){ return a+g.score; },0)/allG.length).toFixed(1) : '-';
   document.getElementById('n-score').textContent = sm;
+
+  // Barra de momentum
+  document.getElementById('momentum-bar-container').innerHTML = buildMomentumBar(allG.map(function(x){ return x[0]; }));
 
   // Tarjetas
   var cards = '';
