@@ -34,10 +34,11 @@ jobs:
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
         run: python scanner.py
 
-      - name: Commit y push de datos actualizados
+       - name: Commit y push de datos actualizados
         run: |
           git config --global user.name 'Scanner Bot'
           git config --global user.email 'scanner@github.com'
+          git pull --rebase origin main
           git add data.json history.json
           git diff --staged --quiet || git commit -m "Actualizar datos scanner $(date +'%d/%m/%Y %H:%M')"
           git push
