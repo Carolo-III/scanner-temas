@@ -25,11 +25,10 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install yfinance pandas requests beautifulsoup4 anthropic pytz
+        run: pip install yfinance pandas requests beautifulsoup4 pytz
 
       - name: Ejecutar scanner
         env:
-          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
