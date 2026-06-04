@@ -1,0 +1,43 @@
+name: Scanner Temas Emergentes
+
+on:
+  schedule:
+    # Lunes a viernes a las 23:00h hora Madrid (21:00 UTC en verano, 22:00 UTC en invierno)
+    # Usamos 21:00 UTC para cubrir horario de verano (CEST = UTC+2)
+    - cron: '0 21 * * 1-5'
+  workflow_dispatch:
+    # Permite ejecutar manualmente desde GitHub
+
+jobs:
+  scanner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install yfinance pandas requests beautifulsoup4 anthropic pytz
+
+      - name: Ejecutar scanner
+        env:
+          ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN_SCANNER: ${{ secrets.GITHUB_TOKEN_SCANNER }}
+        run: python scanner.py
+
+      - name: Commit y push de datos actualizados
+        run: |
+          git config --global user.name 'Scanner Bot'
+          git config --global user.email 'scanner@github.com'
+          git add data.json history.json
+          git diff --staged --quiet || git commit -m "Actualizar datos scanner $(date +'%d/%m/%Y %H:%M')"
+          git push
