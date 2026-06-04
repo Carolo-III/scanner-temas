@@ -29,8 +29,6 @@ jobs:
 
       - name: Ejecutar scanner
         env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
         run: python scanner.py
 
