@@ -31,7 +31,7 @@ jobs:
           ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GITHUB_TOKEN_SCANNER: ${{ secrets.GITHUB_TOKEN_SCANNER }}
+          SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
         run: python scanner.py
 
       - name: Commit y push de datos actualizados
