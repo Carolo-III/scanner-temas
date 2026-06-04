@@ -2,11 +2,11 @@ name: Scanner Temas Emergentes
 
 on:
   schedule:
-    # Lunes a viernes a las 23:00h hora Madrid (21:00 UTC en verano, 22:00 UTC en invierno)
-    # Usamos 21:00 UTC para cubrir horario de verano (CEST = UTC+2)
     - cron: '0 21 * * 1-5'
   workflow_dispatch:
-    # Permite ejecutar manualmente desde GitHub
+
+permissions:
+  contents: write
 
 jobs:
   scanner:
@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout repositorio
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.SCANNER_TOKEN }}
 
       - name: Configurar Python
         uses: actions/setup-python@v5
@@ -23,8 +25,7 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: |
-          pip install yfinance pandas requests beautifulsoup4 anthropic pytz
+        run: pip install yfinance pandas requests beautifulsoup4 anthropic pytz
 
       - name: Ejecutar scanner
         env:
@@ -34,7 +35,7 @@ jobs:
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
         run: python scanner.py
 
-       - name: Commit y push de datos actualizados
+      - name: Commit y push de datos actualizados
         run: |
           git config --global user.name 'Scanner Bot'
           git config --global user.email 'scanner@github.com'
