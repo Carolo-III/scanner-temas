@@ -243,7 +243,7 @@ def generate_analysis(data, anthropic_key):
     prompt=('Analista tecnico momentum. Informe ejecutivo espanol directo. '+aviso+
             'Estructura: 1.MERCADO 2.TEMAS PRIORITARIOS 3.ENTRADAS(niveles exactos) 4.EXTENDIDOS 5.CONCLUSION. Max 400 palabras. '
             'Aviso final obligatorio: "Este analisis no constituye asesoramiento financiero."\n\n'+summary)
-    msg=client.messages.create(model='claude-sonnet-4-5',max_tokens=1000,messages=[{'role':'user','content':prompt}])
+    msg=client.messages.create(model='claude-sonnet-4-5',max_tokens=1000,messages=[{'role':'user','content':prompt}], timeout=60.0)
     return msg.content[0].text
 
 def get_github_file(filename):
@@ -273,10 +273,17 @@ def update_history(all_groups):
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN: return
-    try:
-        r=requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',json={'chat_id':TELEGRAM_CHAT_ID,'text':message},timeout=10)
-        print(f'  {"OK" if r.status_code==200 else "Error"} Telegram')
-    except Exception as e: print(f'  Error Telegram: {e}')
+    for intento in range(3):
+        try:
+            r=requests.post(f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',json={'chat_id':TELEGRAM_CHAT_ID,'text':message},timeout=30)
+            if r.status_code==200:
+                print('  OK Telegram'); return
+            else:
+                print(f'  Error Telegram: {r.status_code}')
+        except Exception as e:
+            print(f'  Intento Telegram {intento+1}/3: {e}')
+            if intento < 2:
+                import time; time.sleep(5)
 
 def generate_alerts(data, history, spy_healthy=True):
     values=data['values']; groups=data['groups']; ts=data['timestamp']
@@ -351,10 +358,14 @@ def main():
     ar=pr+sr; all_groups=sorted(pgs+sgs,key=lambda x:x['score'],reverse=True)
     print('\n▸ Generando analisis Claude...')
     data_tmp={'timestamp':ts,'mode':'S&P500 + Watchlist','groups':all_groups,'values':sorted(ar,key=lambda x:x['score'] or 0,reverse=True),'spy_healthy':spy_ok}
-    try:
-        analisis=generate_analysis(data_tmp,ANTHROPIC_KEY); print('  OK')
-    except Exception as e:
-        print(f'  Aviso: {e}'); analisis='Analisis no disponible.'
+    analisis='Analisis no disponible.'
+    for intento in range(3):
+        try:
+            analisis=generate_analysis(data_tmp,ANTHROPIC_KEY); print('  OK'); break
+        except Exception as e:
+            print(f'  Intento {intento+1}/3 fallido: {e}')
+            if intento < 2:
+                import time; time.sleep(10)
     history=update_history(all_groups)
     print('\n▸ Generando alertas Telegram...')
     generate_alerts(data_tmp,history,spy_ok)
