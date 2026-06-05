@@ -27,6 +27,12 @@ jobs:
       - name: Instalar dependencias
         run: pip install yfinance pandas requests beautifulsoup4 anthropic pytz
 
+- name: Test conexion Anthropic
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" https://api.anthropic.com/v1/models \
+            -H "x-api-key: ${{ secrets.ANTHROPIC_KEY }}" \
+            -H "anthropic-version: 2023-06-01" || echo "FALLO CONEXION"
+
       - name: Ejecutar scanner
         env:
           ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_KEY }}
