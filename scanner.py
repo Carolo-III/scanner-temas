@@ -580,6 +580,9 @@ def send_telegram(message):
                 import time; time.sleep(5)
 
 def generate_alerts(data, history, spy_healthy=True, bench_series=None):
+    if not TELEGRAM_TOKEN:
+        print('  TELEGRAM_TOKEN no configurado — alertas omitidas')
+        return
     values=data['values']; groups=data['groups']; ts=data['timestamp']
     bs = bench_series
     prev_scores=history[-2].get('scores',{}) if len(history)>=2 else {}
@@ -744,7 +747,8 @@ def main():
     sgs=calc_groups(sr,is_sp=True); print(f'  OK {len(sr)} valores')
     ar=pr+sr; all_groups=sorted(pgs+sgs,key=lambda x:x['score'],reverse=True)
     print('\n▸ Generando analisis Claude...')
-    data_tmp={'timestamp':ts,'mode':'S&P500 + Watchlist','groups':all_groups,'values':sorted(ar,key=lambda x:x['score'] or 0,reverse=True),'spy_healthy':spy_ok}
+    macro = macro if 'macro' in dir() else {}
+    data_tmp={'timestamp':ts,'mode':'S&P500 + Watchlist','groups':all_groups,'values':sorted(ar,key=lambda x:x['score'] or 0,reverse=True),'spy_healthy':spy_ok,'macro':macro}
     analisis='Analisis no disponible. Ejecuta Colab para generar el analisis con Claude.'
     if ANTHROPIC_KEY:
         for intento in range(3):
