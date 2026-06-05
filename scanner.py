@@ -400,7 +400,7 @@ def calc_groups(res, is_sp=False):
 
 def generate_analysis(data, anthropic_key):
     import anthropic as ant
-    client=ant.Anthropic(api_key=anthropic_key)
+    client=ant.Anthropic(api_key=anthropic_key.strip())
     groups=data['groups']; values=data['values']; ts=data['timestamp']; spy_ok=data.get('spy_healthy',True)
     strong=[g for g in groups if g['score']>=70]; emerging=[g for g in groups if 50<=g['score']<70]; weak=[g for g in groups if g['score']<30]
     # Datos macro para el prompt
@@ -753,6 +753,14 @@ def main():
     data_tmp={'timestamp':ts,'mode':'S&P500 + Watchlist','groups':all_groups,'values':sorted(ar,key=lambda x:x['score'] or 0,reverse=True),'spy_healthy':spy_ok,'macro':macro}
     analisis='Analisis no disponible. Ejecuta Colab para generar el analisis con Claude.'
     if ANTHROPIC_KEY:
+        # Test de conexion antes de los reintentos
+        try:
+            import anthropic as ant_test
+            client_test = ant_test.Anthropic(api_key=ANTHROPIC_KEY.strip())
+            models = client_test.models.list()
+            print(f'  Conexion Anthropic OK — modelos disponibles: {len(list(models))}')
+        except Exception as e:
+            print(f'  Test conexion: {e}')
         for intento in range(3):
             try:
                 analisis=generate_analysis(data_tmp,ANTHROPIC_KEY); print('  OK'); break
