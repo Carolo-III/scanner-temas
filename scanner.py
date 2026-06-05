@@ -18,7 +18,7 @@ GITHUB_USER      = 'Carolo-III'
 GITHUB_REPO      = 'scanner-temas'
 GITHUB_TOKEN     = os.environ.get('SCANNER_TOKEN', '')
 ANTHROPIC_KEY    = os.environ.get('ANTHROPIC_KEY', '')
-TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '')
+TELEGRAM_TOKEN   = os.environ.get('TELEGRAM_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '5100549189')
 
 PERSONAL_WATCHLIST = {
