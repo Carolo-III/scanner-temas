@@ -45,6 +45,7 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
 .gd{display:none;border-top:1px solid rgba(255,255,255,.06);padding:12px;overflow-x:auto}
 .gd.op{display:block}
 .tt2{width:100%;border-collapse:collapse;font-size:13px}
+.tt2 thead{position:sticky;top:0;z-index:2}
 .tt2 th{font-size:10px;color:var(--d);text-transform:uppercase;padding:6px 4px;border-bottom:1px solid rgba(255,255,255,.08);text-align:right;white-space:nowrap}
 .tt2 th:first-child{text-align:left}
 .tt2 td{padding:6px 4px;border-bottom:1px solid rgba(255,255,255,.04)}
@@ -165,7 +166,7 @@ body{background:var(--bg);color:var(--t);font-family:Arial,sans-serif;font-size:
       <button class="btn-export" onclick="exportTickers(50)">⬇ Score &gt;50</button>
       <button class="btn-export" onclick="exportTickers(0)">⬇ Todos</button>
     </div>
-    <div style="overflow-x:auto;background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:11px;padding:10px">
+    <div style="overflow-x:auto;overflow-y:auto;max-height:70vh;background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:11px;padding:10px">
       <table class="tt2">
         <thead><tr>
           <th style="text-align:left">Val</th>
@@ -679,6 +680,28 @@ function renderAll(data, history) {
 
   var ar = data.values;
   window._allResults = ar;
+
+  // Extraer tickers mencionados en ENTRADAS del analisis
+  var entradaTickers = {};
+  if (data.analisis) {
+    var analisisText = data.analisis;
+    // Buscar sección ENTRADAS (entre ## 3. y ## 4.)
+    var matchEntradas = analisisText.match(/(?:3\.|ENTRADAS?|ALERTAS? DE ENTRADA)[^
+]*
+([\s\S]*?)(?=##\s*4\.|##\s*EXTENDIDOS|##\s*CONCLUSION|$)/i);
+    if (matchEntradas) {
+      var seccionEntradas = matchEntradas[1];
+      // Extraer tickers (palabras en mayúsculas de 1-5 chars precedidas de ** o -)
+      var tickerMatches = seccionEntradas.match(/\*\*([A-Z]{1,5})\*\*|^[-•]\s*\*?\*?([A-Z]{1,5})\*?\*?[\s:]/gm);
+      if (tickerMatches) {
+        tickerMatches.forEach(function(m) {
+          var tk = m.replace(/[\*\-•:\s]/g, '').trim();
+          if (tk.length >= 1 && tk.length <= 5) entradaTickers[tk] = true;
+        });
+      }
+    }
+  }
+  window._entradaTickers = entradaTickers;
   var allG = data.groups;
   var bos = ar.filter(function(r){ return r.breakout; }).sort(function(a,b){ return (b.score||0)-(a.score||0); });
 
@@ -735,9 +758,13 @@ function renderAll(data, history) {
     var r1m = m.ret_1m !== undefined && m.ret_1m !== null ? fmtS(m.ret_1m)+'%' : '-';
     var pr  = m.price ? '$'+m.price.toFixed(2) : '-';
     var tvLink = 'https://www.tradingview.com/chart/?symbol=' + m.ticker;
-    return '<tr>' +
-      '<td class="ttt"><a href="' + tvLink + '" target="_blank" style="color:var(--t);text-decoration:none">' + m.ticker + (m.breakout?'*':'') + '</a></td>' +
-      '<td class="tn" style="font-size:11px;color:var(--d)">' + m.group.substring(0,14) + '</td>' +
+    var esEntrada = window._entradaTickers && window._entradaTickers[m.ticker];
+    var tickerStyle = esEntrada
+      ? 'color:#F0B429;font-weight:900;text-decoration:none'
+      : 'color:var(--t);text-decoration:none';
+    return '<tr>' + (esEntrada ? '<td class="ttt" style="border-left:3px solid #F0B429"><a href="' + tvLink + '" target="_blank" style="' + tickerStyle + '">' + m.ticker + (m.breakout?'*':'') + '</a></td>' : '<td class="ttt"><a href="' + tvLink + '" target="_blank" style="' + tickerStyle + '">' + m.ticker + (m.breakout?'*':'') + '</a></td>') +
+
+      '<td class="tn" style="font-size:11px;color:var(--d);text-align:left">' + m.group.substring(0,14) + '</td>' +
       '<td class="tn">' + pr + '</td>' +
       '<td class="tn" style="color:' + vc(m.ret_1m) + '">' + r1m + '</td>' +
       '<td class="tn" style="color:' + vc(m.pct_from_high) + '">' + p52 + '</td>' +
@@ -798,7 +825,7 @@ function renderAll(data, history) {
         '<td class="tn"><b style="color:' + col + '">' + e.resultado + '</b></td>' +
         '</tr>';
     }).join('');
-    rendContainer.innerHTML = '<div style="overflow-x:auto;background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:11px;padding:10px">' +
+    rendContainer.innerHTML = '<div style="overflow-x:auto;overflow-y:auto;max-height:70vh;background:var(--bg2);border:1px solid rgba(240,180,41,.12);border-radius:11px;padding:10px">' +
       '<table class="tt2"><thead><tr>' +
       '<th style="text-align:left">Val</th><th>Fecha</th><th>Dias</th><th>Tipo</th>' +
       '<th>Entrada</th><th>Actual</th><th>Ret%</th><th>Result</th>' +
