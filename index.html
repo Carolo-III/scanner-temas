@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scanner · Temas Emergentes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0a0b;--bg2:#111114;--bg3:#18181c;
+  --t:#E8E8F0;--d:#8A9BB5;--g:#8A9BB5;
+  --gr:#06D6A0;--gold:#F0B429;--red:#EF476F;--orange:#FB923C;
+  --border:rgba(240,180,41,.12);
+  --font:'DM Sans',sans-serif;--mono:'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--t);font-family:var(--font);font-size:14px;min-height:100vh}
+/* HEADER */
+.hdr{padding:16px 16px 0;position:relative}
+.htitle{font-family:'Bebas Neue',sans-serif;font-size:32px;letter-spacing:2px;color:var(--t)}
+.htitle span{color:var(--gold)}
+.hts{font-size:11px;color:var(--d);margin-top:2px}
+.spy-strip,.macro-strip{font-size:11px;color:var(--d);margin-top:4px;display:none}
+.spy-strip span,.macro-strip span{font-weight:600}
+/* TABS */
+.tabs{display:flex;gap:0;padding:12px 16px 0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tab{background:transparent;border:1px solid var(--border);color:var(--d);padding:8px 16px;
+  font-family:var(--font);font-size:12px;font-weight:600;letter-spacing:1px;text-transform:uppercase;
+  cursor:pointer;flex-shrink:0;transition:all .2s}
+.tab:first-child{border-radius:8px 0 0 8px}
+.tab:last-child{border-radius:0 8px 8px 0}
+.tab.active{background:var(--gold);border-color:var(--gold);color:#000}
+.tab:not(:first-child){border-left:none}
+/* SUMMARY */
+.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px 16px}
+.sv{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px;text-align:center}
+.sn{font-family:'Bebas Neue',sans-serif;font-size:28px;color:var(--gold)}
+.sl{font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--d);margin-top:2px}
+/* MOMENTUM BAR */
+.mb{background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:12px 14px;margin:0 16px 10px}
+.mb-title{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--d);margin-bottom:8px}
+.mb-track{height:10px;background:rgba(255,255,255,.06);border-radius:5px;overflow:hidden;display:flex}
+.mb-seg{height:100%;transition:width .4s}
+.mb-legend{display:flex;gap:10px;margin-top:7px;flex-wrap:wrap}
+.mb-leg{font-size:11px;color:var(--d);display:flex;align-items:center;gap:4px}
+.mb-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.mb-count{font-weight:700;color:var(--t)}
+/* PANELS */
+.panel{display:none;padding:0 16px 16px}
+.panel.active{display:block}
+.sh{font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--d);padding:10px 0 8px;border-bottom:1px solid var(--border);margin-bottom:10px}
+/* CARDS */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:12px;margin-bottom:8px;cursor:pointer;transition:border-color .2s}
+.card:hover{border-color:rgba(240,180,41,.3)}
+.card-header{display:flex;align-items:center;justify-content:space-between}
+.card-rank{font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--d);min-width:36px}
+.card-info{flex:1}
+.card-name{font-weight:700;font-size:14px}
+.card-meta{font-size:11px;color:var(--d);margin-top:2px}
+.card-leaders{font-size:11px;color:var(--gr);margin-top:3px}
+.card-score{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-weight:700;font-size:15px;border:2px solid;flex-shrink:0}
+.card-arrow{font-size:11px;margin-top:4px;text-align:center}
+.card-body{display:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px;overflow-x:auto}
+.wl-badge{font-size:9px;background:rgba(240,180,41,.15);border:1px solid rgba(240,180,41,.3);color:var(--gold);border-radius:4px;padding:1px 5px;margin-left:5px;vertical-align:middle}
+/* TABLES */
+.tt2{width:100%;border-collapse:collapse;font-size:12px}
+.tt2 thead{position:sticky;top:0;z-index:2;background:var(--bg2)}
+.tt2 th{padding:5px 6px;color:var(--d);font-weight:600;font-size:10px;letter-spacing:1px;text-transform:uppercase;white-space:nowrap;background:var(--bg2)}
+.tt2 th:first-child,.tt2 th:nth-child(2){text-align:left}
+.tt2 th:not(:first-child):not(:nth-child(2)){text-align:right}
+.tt2 td{padding:5px 6px;border-bottom:1px solid rgba(255,255,255,.04);white-space:nowrap}
+.tt2 td:not(:first-child):not(:nth-child(2)){text-align:right}
+.tt2 tr:hover td{background:rgba(255,255,255,.03)}
+.ttt{font-family:var(--mono);font-weight:600;font-size:12px}
+.tn{font-family:var(--mono);font-size:11px;color:var(--t)}
+.tt{font-family:var(--mono);font-size:12px}
+/* VALORES TABLE WRAPPER */
+.vals-wrap{overflow-x:auto;overflow-y:auto;max-height:68vh;background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:10px}
+/* EXPORT BUTTONS */
+.export-btns{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.btn-export{background:rgba(240,180,41,.12);border:1px solid rgba(240,180,41,.3);color:var(--gold);
+  border-radius:7px;padding:7px 13px;font-size:12px;cursor:pointer;font-family:var(--font);font-weight:600}
+.btn-export:hover{background:rgba(240,180,41,.2)}
+/* RUPTURAS */
+.rup-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px}
+.ai{background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:12px;display:flex;align-items:center;gap:10px}
+.at{font-family:var(--mono);font-weight:700;font-size:14px;min-width:60px}
+.ain{flex:1;font-size:12px;color:var(--d)}
+.ain b{color:var(--t)}
+.bo-hoy{background:rgba(6,214,160,.15);border:1px solid rgba(6,214,160,.4);border-radius:5px;
+  padding:1px 6px;font-size:10px;color:#06D6A0;font-weight:700;margin-left:5px}
+.bo-viejo{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:5px;
+  padding:1px 6px;font-size:10px;color:var(--d);margin-left:5px}
+/* ANALISIS */
+.analisis-ts{font-size:11px;color:var(--d);margin-bottom:10px;font-style:italic}
+.analisis-box{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:18px;
+  white-space:pre-wrap;font-size:13px;line-height:1.8;color:var(--t)}
+.no-analisis{text-align:center;padding:40px 20px;color:var(--d)}
+.no-analisis b{display:block;font-size:16px;color:var(--g);margin-bottom:8px}
+/* RENDIMIENTO */
+.rend-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+/* MANUAL */
+.man-section{background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:16px;margin-bottom:10px}
+.man-section h2{font-family:'Bebas Neue',sans-serif;font-size:20px;letter-spacing:1px;color:var(--gold);margin-bottom:10px}
+.man-section h3{font-size:13px;font-weight:700;color:var(--t);margin:12px 0 4px}
+.man-section p{font-size:13px;color:var(--d);line-height:1.7;margin-bottom:8px}
+.metric-card{background:var(--bg3);border-radius:8px;padding:10px;margin-bottom:6px}
+.metric-name{font-weight:700;font-size:13px;color:var(--t);margin-bottom:3px}
+.metric-weight{font-size:10px;color:var(--gold);margin-bottom:3px}
+.metric-desc{font-size:12px;color:var(--d);line-height:1.6}
+.note{background:rgba(240,180,41,.06);border:1px solid rgba(240,180,41,.2);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--d);margin-top:8px}
+.warn{background:rgba(239,71,111,.06);border:1px solid rgba(239,71,111,.2);border-radius:8px;padding:8px 10px;font-size:12px;color:#EF476F;margin-top:8px}
+.good{background:rgba(6,214,160,.06);border:1px solid rgba(6,214,160,.2);border-radius:8px;padding:8px 10px;font-size:12px;color:#06D6A0;margin-top:8px}
+.step{display:flex;gap:10px;align-items:flex-start;margin-bottom:8px}
+.step-num{background:var(--gold);color:#000;border-radius:50%;width:22px;height:22px;
+  display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0}
+.step-text{font-size:13px;color:var(--d);line-height:1.6;padding-top:2px}
+.faq-item{border-bottom:1px solid var(--border);padding:8px 0}
+.faq-q{font-size:13px;font-weight:600;cursor:pointer;display:flex;justify-content:space-between}
+.faq-a{font-size:12px;color:var(--d);line-height:1.6;margin-top:6px;display:none}
+/* SCORE TABLE */
+.score-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.score-table th,.score-table td{padding:6px 8px;border-bottom:1px solid var(--border);text-align:left}
+.score-table th{color:var(--d);font-size:10px;text-transform:uppercase;letter-spacing:1px}
+.cdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+/* FOOTER */
+.foot{text-align:center;padding:16px;font-size:9px;color:var(--d)}
+/* ENTRADA HIGHLIGHT */
+.entrada-ticker{color:var(--gold) !important;font-weight:900 !important}
+.entrada-row td:first-child{border-left:3px solid var(--gold)}
+/* NO DATA */
+.no-data{text-align:center;padding:40px 20px;color:var(--d)}
+.no-data b{display:block;font-size:18px;color:var(--gold);margin-bottom:8px}
+/* SPARKLINE */
+.spark{display:inline-flex;gap:2px;align-items:flex-end;height:20px;margin-left:8px;vertical-align:middle}
+.spark-bar{width:4px;background:var(--gold);border-radius:1px;opacity:.7;min-height:2px}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="htitle">TEMAS <span>EMERGENTES</span></div>
+  <div class="hts" id="ts">Cargando datos...</div>
+  <div class="spy-strip" id="spy-strip">
+    SPY <span id="spy-1w"></span> esta semana &middot;
+    <span id="spy-1m"></span> este mes &middot;
+    <span id="spy-estado"></span>
+  </div>
+  <div class="macro-strip" id="macro-strip">
+    VIX <span id="m-vix"></span> &middot;
+    DXY <span id="m-dxy"></span> &middot;
+    US10Y <span id="m-usy"></span>%
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" id="btn-temas"      onclick="sp('temas')">Temas</button>
+  <button class="tab"        id="btn-valores"    onclick="sp('valores')">Valores</button>
+  <button class="tab"        id="btn-rupturas"   onclick="sp('rupturas')">Rupturas</button>
+  <button class="tab"        id="btn-analisis"   onclick="sp('analisis')">Analisis</button>
+  <button class="tab"        id="btn-rendimiento" onclick="sp('rendimiento')">Rendimiento</button>
+  <button class="tab"        id="btn-manual"     onclick="sp('manual')">Manual</button>
+</div>
+
+<!-- SUMMARY -->
+<div class="summary">
+  <div class="sv"><div class="sn" id="n-temas">-</div><div class="sl">Temas</div></div>
+  <div class="sv"><div class="sn" id="n-vals">-</div><div class="sl">Valores</div></div>
+  <div class="sv"><div class="sn" style="color:var(--gr)" id="n-bos">-</div><div class="sl">Rupturas</div></div>
+  <div class="sv"><div class="sn" style="color:var(--d)" id="n-score">-</div><div class="sl">Score</div></div>
+</div>
+
+<!-- TEMAS -->
+<div id="p-temas" class="panel active">
+  <div id="mb-container"></div>
+  <div class="sh">Temas por fuerza</div>
+  <div id="cards-container">
+    <div class="no-data"><b>Sin datos todavia</b>Ejecuta el notebook en Colab para generar el dashboard.</div>
+  </div>
+</div>
+
+<!-- VALORES -->
+<div id="p-valores" class="panel">
+  <div class="sh">Todos los valores por score</div>
+  <div class="export-btns">
+    <button class="btn-export" onclick="exportTickers(70)">&#8595; Score &gt;70</button>
+    <button class="btn-export" onclick="exportTickers(50)">&#8595; Score &gt;50</button>
+    <button class="btn-export" onclick="exportTickers(0)">&#8595; Todos</button>
+  </div>
+  <div class="vals-wrap">
+    <table class="tt2">
+      <thead><tr>
+        <th style="text-align:left">Val</th>
+        <th style="text-align:left">Tema</th>
+        <th>Precio</th><th>Ret1m</th><th>52s</th>
+        <th>RS4s</th><th>RS13s</th><th>Vols</th><th>MAs</th>
+        <th>RSI</th><th>ADX</th><th>SCT</th><th>Sc</th>
+      </tr></thead>
+      <tbody id="vals-body"><tr><td colspan="13" style="text-align:center;padding:20px;color:var(--d)">Cargando...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- RUPTURAS -->
+<div id="p-rupturas" class="panel">
+  <div class="sh">Valores con ruptura activa</div>
+  <div class="rup-grid" id="rup-container">
+    <div style="color:var(--d);text-align:center;padding:20px">Cargando...</div>
+  </div>
+</div>
+
+<!-- ANALISIS -->
+<div id="p-analisis" class="panel">
+  <div class="sh">Analisis del mercado</div>
+  <div id="analisis-container">
+    <div class="no-analisis"><b>Sin analisis disponible</b>Ejecuta Colab para generar el analisis con Claude.</div>
+  </div>
+</div>
+
+<!-- RENDIMIENTO -->
+<div id="p-rendimiento" class="panel">
+  <div class="sh">Rendimiento de setups anteriores</div>
+  <div class="rend-stats" id="rend-stats"></div>
+  <div id="rend-container">
+    <div style="color:var(--d);text-align:center;padding:40px 20px">
+      <b style="display:block;font-size:16px;color:var(--g);margin-bottom:8px">Sin datos todavia</b>
+      Los resultados apareceran tras 5 dias de ejecucion del scanner.
+    </div>
+  </div>
+</div>
+
+<!-- MANUAL -->
+<div id="p-manual" class="panel">
+  <div class="man-section">
+    <h2>Que es este dashboard</h2>
+    <p>El Scanner de Temas Emergentes analiza cada noche el S&amp;P 500 completo mas una watchlist personal para detectar donde esta fluyendo el dinero institucional.</p>
+    <p>No es un sistema de compra automatica. Es una herramienta de filtrado y priorizacion.</p>
+    <div class="note">Datos: Yahoo Finance, cierre del dia anterior. Se actualiza automaticamente cada noche de lunes a viernes.</div>
+  </div>
+  <div class="man-section">
+    <h2>El Score (0-100)</h2>
+    <table class="score-table">
+      <thead><tr><th>Score</th><th>Significado</th><th>Que hacer</th></tr></thead>
+      <tbody>
+        <tr><td><span class="cdot" style="background:#06D6A0"></span><b style="color:#06D6A0">70-100</b></td><td>Tema muy fuerte</td><td>Analizar en profundidad</td></tr>
+        <tr><td><span class="cdot" style="background:#F0B429"></span><b style="color:#F0B429">50-69</b></td><td>Tema emergente</td><td>Seguimiento activo</td></tr>
+        <tr><td><span class="cdot" style="background:#FB923C"></span><b style="color:#FB923C">30-49</b></td><td>Senal debil</td><td>Watchlist pasiva</td></tr>
+        <tr><td><span class="cdot" style="background:#EF476F"></span><b style="color:#EF476F">0-29</b></td><td>Sin momentum</td><td>Ignorar</td></tr>
+      </tbody>
+    </table>
+    <div class="warn">Un score alto no es una senal de compra. Es un punto de partida para analisis.</div>
+  </div>
+  <div class="man-section">
+    <h2>SCT — Score de Confirmacion Tecnica</h2>
+    <p>Segundo score (0-100) basado en 7 indicadores tecnicos: RSI, MACD, ADX, Bollinger Squeeze, CMF, OBV y ATR. Complementa el score principal sin romper el historial.</p>
+    <div class="metric-card"><div class="metric-name">ADX (20%)</div><div class="metric-desc">Fuerza de la tendencia. Mayor de 25 = tendencia confirmada. Mayor de 40 = tendencia muy fuerte.</div></div>
+    <div class="metric-card"><div class="metric-name">RSI (20%)</div><div class="metric-desc">Momentum interno. Optimo entre 55-70. Mayor de 70 = sobrecomprado con cautela.</div></div>
+    <div class="metric-card"><div class="metric-name">MACD (20%)</div><div class="metric-desc">Histograma positivo = impulso alcista naciente.</div></div>
+    <div class="metric-card"><div class="metric-name">Bollinger Squeeze (15%)</div><div class="metric-desc">Compresion de volatilidad antes de ruptura. SQUEEZE + precio al alza = senal potente.</div></div>
+    <div class="metric-card"><div class="metric-name">CMF (15%)</div><div class="metric-desc">Chaikin Money Flow. Mayor de 0.1 = acumulacion institucional.</div></div>
+    <div class="metric-card"><div class="metric-name">OBV (10%)</div><div class="metric-desc">On Balance Volume. En maximos junto con precio = confirmacion de tendencia.</div></div>
+  </div>
+  <div class="man-section">
+    <h2>Filtro SPY</h2>
+    <div class="good">SPY sobre MM200: mercado alcista. Scores normales.</div>
+    <div class="warn">SPY bajo MM200: mercado bajista. Todos los scores penalizados un 30%. Reducir tamano de posicion.</div>
+  </div>
+  <div class="man-section">
+    <h2>Rangos de entrada</h2>
+    <div class="metric-card"><div class="metric-name">Ruptura activa</div><div class="metric-desc">Precio hasta +15% sobre nivel de ruptura. Stop bajo minimo 5 dias. Objetivo proyectando la base.</div></div>
+    <div class="metric-card"><div class="metric-name">Extendido — esperar pullback</div><div class="metric-desc">Precio mas de +15% sobre ruptura. Sin setup valido. Esperar retroceso a MM50.</div></div>
+    <div class="metric-card"><div class="metric-name">Pullback MM50 / MM200</div><div class="metric-desc">Precio dentro del +/-4% de la media. Setup clasico de continuacion.</div></div>
+    <div class="metric-card"><div class="metric-name">En vigilancia</div><div class="metric-desc">En base sin romper. Se indica el nivel a vigilar.</div></div>
+    <div class="note">Solo se incluyen en el analisis de Claude los setups con R/B mayor o igual a 1:2.</div>
+  </div>
+  <div class="man-section">
+    <h2>Flujo de trabajo diario</h2>
+    <div class="step"><div class="step-num">1</div><div class="step-text">La web se actualiza automaticamente cada noche de lunes a viernes a las 23:00h.</div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-text">Ejecuta Colab cuando necesites el analisis de Claude y las alertas de Telegram.</div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-text">Mira la barra de momentum. Si es mayoritariamente roja, el mercado es muy selectivo.</div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-text">Lee el analisis en la pestana Analisis. Temas prioritarios y setups del dia.</div></div>
+    <div class="step"><div class="step-num">5</div><div class="step-text">En la pestana Valores, los tickers en amarillo son los mencionados en ENTRADAS del analisis.</div></div>
+    <div class="step"><div class="step-num">6</div><div class="step-text">Verifica siempre en el grafico real. El dashboard dice donde mirar, no que comprar.</div></div>
+    <div class="good">Regla de oro: tema mas fuerte — valor lider — entrada con volumen confirmado.</div>
+  </div>
+  <div class="man-section">
+    <h2>Preguntas frecuentes</h2>
+    <div class="faq-item"><div class="faq-q" onclick="faq(this)">Por que la web aparece vacia? <span>+</span></div><div class="faq-a">Recarga con Ctrl+Shift+R. Si persiste, abre en pestana de incognito.</div></div>
+    <div class="faq-item"><div class="faq-q" onclick="faq(this)">Celda 3 o Celda 4 en Colab? <span>+</span></div><div class="faq-a">Celda 3 = watchlist personal (~45 seg). Celda 4 = S&P 500 completo (~5 min).</div></div>
+    <div class="faq-item"><div class="faq-q" onclick="faq(this)">Por que un tema bajo de posicion? <span>+</span></div><div class="faq-a">El score cambia cada dia. Una caida puede indicar rotacion — el dinero esta saliendo. Es informacion valiosa.</div></div>
+    <div class="faq-item"><div class="faq-q" onclick="faq(this)">Que significa SPY bajo MM200? <span>+</span></div><div class="faq-a">Mercado en tendencia bajista. Scores penalizados 30%. Reducir tamano de posicion y ser muy selectivo.</div></div>
+  </div>
+  <div class="warn" style="margin-top:10px">Este sistema es una herramienta de analisis personal, no asesoramiento financiero.</div>
+</div>
+
+<div class="foot">Scanner de Temas Emergentes &middot; Datos: Yahoo Finance EOD &middot; Uso personal</div>
+
+<script>
+var DATA_URL = 'https://raw.githubusercontent.com/Carolo-III/scanner-temas/main/data.json';
+var HIST_URL = 'https://raw.githubusercontent.com/Carolo-III/scanner-temas/main/history.json';
+
+// ── UTILIDADES ───────────────────────────────────────────────────────
+function vc(v){ if(v===null||v===undefined) return 'var(--d)'; return v>=0?'#06D6A0':'#EF476F'; }
+function sc(s){ if(!s) return 'var(--d)'; if(s>=70) return '#06D6A0'; if(s>=50) return '#F0B429'; if(s>=30) return '#FB923C'; return '#EF476F'; }
+function fmtS(v){ if(v===null||v===undefined) return '-'; return (v>=0?'+':'')+v.toFixed(1); }
+function fmtP(v){ if(v===null||v===undefined) return '-'; return v.toFixed(1); }
+function rsiColor(v){ if(!v) return 'var(--d)'; if(v>=55&&v<=70) return '#06D6A0'; if(v>=50&&v<55) return '#F0B429'; if(v>70) return '#FB923C'; return '#EF476F'; }
+function adxColor(v){ if(!v) return 'var(--d)'; if(v>=40) return '#06D6A0'; if(v>=25) return '#F0B429'; return '#EF476F'; }
+function maStr(m){
+  var r='';
+  r+=(m.ma20?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>');
+  r+=(m.ma50?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>');
+  r+=(m.ma200?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>');
+  return r;
+}
+function tvUrl(tk){ return 'https://www.tradingview.com/chart/?symbol='+tk; }
+
+// ── TABS ─────────────────────────────────────────────────────────────
+function sp(id){
+  document.querySelectorAll('.panel').forEach(function(p){p.classList.remove('active')});
+  document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});
+  document.getElementById('p-'+id).classList.add('active');
+  document.getElementById('btn-'+id).classList.add('active');
+}
+
+// ── FAQ ──────────────────────────────────────────────────────────────
+function faq(el){
+  var a=el.nextElementSibling;
+  var open=a.style.display==='block';
+  a.style.display=open?'none':'block';
+  el.querySelector('span').textContent=open?'+':'-';
+}
+
+// ── CARDS TOGGLE ─────────────────────────────────────────────────────
+function tog(el){
+  var b=el.querySelector('.card-body');
+  b.style.display=b.style.display==='block'?'none':'block';
+}
+
+// ── EXPORTAR TICKERS ─────────────────────────────────────────────────
+function exportTickers(minScore){
+  if(!window._allResults) return;
+  var tickers=window._allResults
+    .filter(function(v){ return (v.score||0)>=minScore; })
+    .map(function(v){ return v.ticker.replace('*',''); });
+  var txt=tickers.join(',');
+  var blob=new Blob([txt],{type:'text/plain'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='tickers_score'+minScore+'.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// ── MOMENTUM BAR ─────────────────────────────────────────────────────
+function buildMomentumBar(groups){
+  var strong=groups.filter(function(g){return g.score>=70}).length;
+  var medium=groups.filter(function(g){return g.score>=50&&g.score<70}).length;
+  var weak=groups.filter(function(g){return g.score>=30&&g.score<50}).length;
+  var none=groups.filter(function(g){return g.score<30}).length;
+  var total=groups.length||1;
+  var ps=(strong/total*100).toFixed(1);
+  var pm=(medium/total*100).toFixed(1);
+  var pw=(weak/total*100).toFixed(1);
+  var pn=(none/total*100).toFixed(1);
+  return '<div class="mb">'+
+    '<div class="mb-title">Concentracion del Momentum &mdash; '+total+' temas analizados</div>'+
+    '<div class="mb-track">'+
+    '<div class="mb-seg" style="width:'+ps+'%;background:#06D6A0"></div>'+
+    '<div class="mb-seg" style="width:'+pm+'%;background:#F0B429"></div>'+
+    '<div class="mb-seg" style="width:'+pw+'%;background:#FB923C"></div>'+
+    '<div class="mb-seg" style="width:'+pn+'%;background:#EF476F"></div>'+
+    '</div>'+
+    '<div class="mb-legend">'+
+    '<div class="mb-leg"><div class="mb-dot" style="background:#06D6A0"></div>Fuerte (70+) <b class="mb-count">'+strong+'</b></div>'+
+    '<div class="mb-leg"><div class="mb-dot" style="background:#F0B429"></div>Emergente (50-69) <b class="mb-count">'+medium+'</b></div>'+
+    '<div class="mb-leg"><div class="mb-dot" style="background:#FB923C"></div>Debil (30-49) <b class="mb-count">'+weak+'</b></div>'+
+    '<div class="mb-leg"><div class="mb-dot" style="background:#EF476F"></div>Sin momentum (<30) <b class="mb-count">'+none+'</b></div>'+
+    '</div></div>';
+}
+
+// ── SPARKLINE ────────────────────────────────────────────────────────
+function sparkline(scores){
+  if(!scores||scores.length<2) return '';
+  var min=Math.min.apply(null,scores);
+  var max=Math.max.apply(null,scores);
+  var range=max-min||1;
+  var bars=scores.map(function(s){
+    var h=Math.round(((s-min)/range)*16)+4;
+    return '<div class="spark-bar" style="height:'+h+'px"></div>';
+  }).join('');
+  return '<span class="spark">'+bars+'</span>';
+}
+
+// ── EXTRAER TICKERS DE ENTRADAS ──────────────────────────────────────
+function extractEntradaTickers(analisis){
+  var result={};
+  if(!analisis) return result;
+  try{
+    var lineas=analisis.split('\n');
+    var enSeccion=false;
+    var skip=['RS','ADX','RSI','SCT','CMF','OBV','SPY','VIX','DXY','ETF','USD','API','RB','MM','MA','SMA','EMA'];
+    for(var i=0;i<lineas.length;i++){
+      var l=lineas[i];
+      if(/ENTRADAS?|ALERTAS? DE ENTRADA/i.test(l)){enSeccion=true;continue;}
+      if(enSeccion&&/^##/.test(l)){enSeccion=false;}
+      if(enSeccion){
+        var ms=l.match(/([A-Z]{2,5})/g);
+        if(ms) ms.forEach(function(tk){
+          if(tk.length>=2&&tk.length<=5&&skip.indexOf(tk)===-1) result[tk]=true;
+        });
+      }
+    }
+  }catch(e){}
+  return result;
+}
+
+// ── RENDER PRINCIPAL ─────────────────────────────────────────────────
+function renderAll(data, history){
+  var ar=data.values||[];
+  var allG=data.groups||[];
+  var ts=data.timestamp||'';
+  var bos=ar.filter(function(r){return r.breakout;}).sort(function(a,b){return (b.score||0)-(a.score||0);});
+
+  window._allResults=ar;
+  var entradaTickers=extractEntradaTickers(data.analisis);
+  window._entradaTickers=entradaTickers;
+
+  // Header
+  document.getElementById('ts').textContent='Actualizado: '+ts;
+
+  // SPY strip
+  if(data.spy_ret_1w!==null&&data.spy_ret_1w!==undefined){
+    var s1w=data.spy_ret_1w; var s1m=data.spy_ret_1m;
+    document.getElementById('spy-1w').innerHTML='<span style="color:'+(s1w>=0?'#06D6A0':'#EF476F');
+    document.getElementById('spy-1w').outerHTML='<span id="spy-1w" style="color:'+(s1w>=0?'#06D6A0':'#EF476F')+'">'+
+      (s1w>=0?'+':'')+s1w+'%</span>';
+    document.getElementById('spy-1m').outerHTML='<span id="spy-1m" style="color:'+(s1m>=0?'#06D6A0':'#EF476F')+'">'+
+      (s1m>=0?'+':'')+s1m+'%</span>';
+    document.getElementById('spy-estado').outerHTML='<span id="spy-estado" style="color:'+(data.spy_healthy?'#06D6A0':'#EF476F')+'">'+
+      (data.spy_healthy?'Sobre MM200':'Bajo MM200')+'</span>';
+    document.getElementById('spy-strip').style.display='block';
+  }
+
+  // Macro strip
+  if(data.macro){
+    var vix=data.macro['^VIX']||{};
+    var dxy=data.macro['DX-Y.NYB']||{};
+    var usy=data.macro['^TNX']||{};
+    function fmMacro(val,chg,inv){
+      if(!val) return '-';
+      var col=inv?(chg>=0?'#EF476F':'#06D6A0'):(chg>=0?'#06D6A0':'#EF476F');
+      return '<span style="color:'+col+';font-weight:600">'+val+(chg!==undefined?' ('+(chg>=0?'+':'')+chg+'%)':'')+'</span>';
+    }
+    document.getElementById('m-vix').innerHTML=fmMacro(vix.current,vix.chg_pct,true);
+    document.getElementById('m-dxy').innerHTML=fmMacro(dxy.current,dxy.chg_pct,false);
+    document.getElementById('m-usy').innerHTML=fmMacro(usy.current,usy.chg_pct,false);
+    document.getElementById('macro-strip').style.display='block';
+  }
+
+  // Summary
+  document.getElementById('n-temas').textContent=allG.length;
+  document.getElementById('n-vals').textContent=ar.length;
+  document.getElementById('n-bos').textContent=bos.length;
+  var avgScore=allG.length?allG.reduce(function(a,g){return a+g.score;},0)/allG.length:0;
+  document.getElementById('n-score').textContent=avgScore.toFixed(1);
+
+  // Historial scores por grupo
+  var prevScores={};
+  if(history&&history.length>=2){
+    prevScores=history[history.length-2].scores||{};
+  }
+
+  // Momentum bar
+  document.getElementById('mb-container').innerHTML=buildMomentumBar(allG);
+
+  // CARDS
+  if(!allG.length){
+    document.getElementById('cards-container').innerHTML=
+      '<div class="no-data"><b>Sin datos todavia</b>Ejecuta el notebook en Colab para generar el dashboard.</div>';
+  } else {
+    var cards=allG.map(function(g,idx){
+      var scoreColor=sc(g.score);
+      var prev=prevScores[g.group];
+      var arrow='';
+      if(prev!==undefined){
+        var diff=g.score-prev;
+        if(diff>2) arrow='<div class="card-arrow" style="color:#06D6A0">&#9650; +'+diff.toFixed(1)+'</div>';
+        else if(diff<-2) arrow='<div class="card-arrow" style="color:#EF476F">&#9660; '+diff.toFixed(1)+'</div>';
+      }
+      // sparkline
+      var spScores=[];
+      if(history) history.forEach(function(h){ if(h.scores&&h.scores[g.group]!==undefined) spScores.push(h.scores[g.group]); });
+      var spark=sparkline(spScores);
+
+      var leaders=(g.top3||[]).map(function(m){
+        var wl=m.group&&PERSONAL_GROUPS&&PERSONAL_GROUPS.indexOf(m.group)>=0;
+        return '<a href="'+tvUrl(m.ticker)+'" target="_blank" style="color:var(--gr);text-decoration:none">'+
+          m.ticker+(m.breakout?'*':'')+'</a>'+(wl?'<span class="wl-badge">WL</span>':'')+
+          '<small style="color:var(--d)">('+m.score+')</small>';
+      }).join(' &middot; ');
+
+      // tabla interna
+      var rows=(g.members||[]).map(function(m){
+        var isWL=m.group&&PERSONAL_GROUPS&&PERSONAL_GROUPS.indexOf(m.group)>=0;
+        var wlBadge=isWL?'<span class="wl-badge">WL</span>':'';
+        return '<tr>'+
+          '<td class="ttt"><a href="'+tvUrl(m.ticker)+'" target="_blank" style="color:var(--t);text-decoration:none">'+
+          m.ticker+(m.breakout?'*':'')+wlBadge+'</a></td>'+
+          '<td class="tn" style="color:'+vc(m.rs_4w)+'">'+fmtS(m.rs_4w)+'%</td>'+
+          '<td class="tn" style="color:'+vc(m.rs_13w)+'">'+fmtS(m.rs_13w)+'%</td>'+
+          '<td class="tn" style="color:'+vc(m.vol_z)+'">'+fmtP(m.vol_z)+'s</td>'+
+          '<td class="tn">'+maStr(m)+'</td>'+
+          '<td class="tn" style="color:'+rsiColor(m.rsi)+'">'+(m.rsi||'-')+'</td>'+
+          '<td class="tn" style="color:'+adxColor(m.adx)+'">'+(m.adx||'-')+'</td>'+
+          '<td class="tn"><b style="color:'+sc(m.sct||0)+'">'+(m.sct||'-')+'</b></td>'+
+          '<td class="tn"><b style="color:'+sc(m.score)+'">'+fmtP(m.score)+'</b></td>'+
+          '</tr>';
+      }).join('');
+
+      return '<div class="card" onclick="tog(this)">'+
+        '<div class="card-header">'+
+        '<div class="card-rank">#'+(idx+1)+'</div>'+
+        '<div class="card-info">'+
+        '<div class="card-name">'+g.group+(g.is_sp?'':' <span class="wl-badge">WL</span>')+'</div>'+
+        '<div class="card-meta">'+g.n+'v &middot; RS:'+g.rs_mean+'% &middot; UP:'+g.breakouts+spark+'</div>'+
+        '<div class="card-leaders">'+leaders+'</div>'+
+        '</div>'+
+        '<div style="text-align:center">'+
+        '<div class="card-score" style="color:'+scoreColor+';border-color:'+scoreColor+'">'+g.score.toFixed(1)+'</div>'+
+        arrow+
+        '</div>'+
+        '</div>'+
+        '<div class="card-body">'+
+        '<table class="tt2"><thead><tr>'+
+        '<th style="text-align:left">Val</th><th>RS4s</th><th>RS13s</th><th>Vols</th><th>MAs</th>'+
+        '<th>RSI</th><th>ADX</th><th>SCT</th><th>Sc</th>'+
+        '</tr></thead><tbody>'+rows+'</tbody></table>'+
+        '</div></div>';
+    }).join('');
+    document.getElementById('cards-container').innerHTML=cards;
+  }
+
+  // VALORES — tabla con tickers de entradas marcados
+  var vrows=ar.map(function(m){
+    var p52=m.pct_from_high!==null&&m.pct_from_high!==undefined?fmtS(m.pct_from_high)+'%':'-';
+    var r1m=m.ret_1m!==null&&m.ret_1m!==undefined?fmtS(m.ret_1m)+'%':'-';
+    var pr=m.price?'$'+m.price.toFixed(2):'-';
+    var esEntrada=entradaTickers[m.ticker]===true;
+    var tkHtml='<a href="'+tvUrl(m.ticker)+'" target="_blank" class="'+(esEntrada?'entrada-ticker':'')+
+      '" style="text-decoration:none;'+(esEntrada?'color:#F0B429;font-weight:900':'color:var(--t)')+'">'+
+      m.ticker+(m.breakout?'*':'')+'</a>';
+    return '<tr class="'+(esEntrada?'entrada-row':'')+'">'+ 
+      '<td class="ttt">'+tkHtml+'</td>'+
+      '<td class="tn" style="text-align:left;font-size:11px;color:var(--d)">'+m.group.substring(0,14)+'</td>'+
+      '<td class="tn">'+pr+'</td>'+
+      '<td class="tn" style="color:'+vc(m.ret_1m)+'">'+r1m+'</td>'+
+      '<td class="tn" style="color:'+vc(m.pct_from_high)+'">'+p52+'</td>'+
+      '<td class="tn" style="color:'+vc(m.rs_4w)+'">'+fmtS(m.rs_4w)+'%</td>'+
+      '<td class="tn" style="color:'+vc(m.rs_13w)+'">'+fmtS(m.rs_13w)+'%</td>'+
+      '<td class="tn" style="color:'+vc(m.vol_z)+'">'+fmtP(m.vol_z)+'s</td>'+
+      '<td class="tn">'+maStr(m)+'</td>'+
+      '<td class="tn" style="color:'+rsiColor(m.rsi)+'">'+(m.rsi!==null&&m.rsi!==undefined?m.rsi:'-')+'</td>'+
+      '<td class="tn" style="color:'+adxColor(m.adx)+'">'+(m.adx!==null&&m.adx!==undefined?m.adx:'-')+'</td>'+
+      '<td class="tn"><b style="color:'+sc(m.sct||0)+'">'+(m.sct!==null&&m.sct!==undefined?m.sct:'-')+'</b></td>'+
+      '<td class="tn"><b style="color:'+sc(m.score)+'">'+fmtP(m.score)+'</b></td>'+
+      '</tr>';
+  }).join('');
+  document.getElementById('vals-body').innerHTML=vrows||'<tr><td colspan="13" style="text-align:center;padding:20px;color:var(--d)">Sin datos</td></tr>';
+
+  // RUPTURAS
+  if(!bos.length){
+    document.getElementById('rup-container').innerHTML='<p style="color:var(--d);text-align:center;padding:16px">Sin rupturas activas</p>';
+  } else {
+    var rup=bos.slice(0,20).map(function(r){
+      var esHoy=r.days_ago===1;
+      var badge=esHoy?'<span class="bo-hoy">HOY</span>':'<span class="bo-viejo">Hace '+r.days_ago+'d</span>';
+      var col=esHoy?'#06D6A0':'var(--d)';
+      var fw=esHoy?'900':'500';
+      return '<div class="ai">'+
+        '<div class="at"><a href="'+tvUrl(r.ticker)+'" target="_blank" style="color:'+col+';text-decoration:none;font-weight:'+fw+'">'+
+        r.ticker+'</a>'+badge+'</div>'+
+        '<div class="ain"><b>'+r.group+'</b><br><small>RS:'+fmtS(r.rs_4w)+'% &middot; Vol:'+fmtP(r.vol_z)+'s</small></div>'+
+        '<div style="font-size:20px;font-weight:900;color:'+sc(r.score)+'">'+r.score+'</div>'+
+        '</div>';
+    }).join('');
+    document.getElementById('rup-container').innerHTML=rup;
+  }
+
+  // ANALISIS
+  var ac=document.getElementById('analisis-container');
+  if(data.analisis){
+    ac.innerHTML='<div class="analisis-ts">Generado: '+ts+'</div>'+
+      '<div class="analisis-box">'+data.analisis.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
+  }
+
+  // RENDIMIENTO
+  var evals=data.evaluaciones||[];
+  var rs=document.getElementById('rend-stats');
+  var rc=document.getElementById('rend-container');
+  if(evals.length===0){
+    rs.innerHTML='';
+    rc.innerHTML='<div style="color:var(--d);text-align:center;padding:40px 20px"><b style="display:block;font-size:16px;color:var(--g);margin-bottom:8px">Sin datos todavia</b>Los resultados apareceran tras 5 dias de ejecucion.</div>';
+  } else {
+    var nOk=evals.filter(function(e){return e.resultado==='target'}).length;
+    var nStop=evals.filter(function(e){return e.resultado==='stop'}).length;
+    var retM=evals.length?(evals.reduce(function(a,e){return a+e.ret_pct;},0)/evals.length).toFixed(1):0;
+    rs.innerHTML=
+      '<div class="sv"><div class="sn" style="color:#06D6A0">'+nOk+'</div><div class="sl">Target</div></div>'+
+      '<div class="sv"><div class="sn" style="color:#EF476F">'+nStop+'</div><div class="sl">Stop</div></div>'+
+      '<div class="sv"><div class="sn" style="color:#F0B429">'+retM+'%</div><div class="sl">Ret medio</div></div>';
+    var erows=evals.sort(function(a,b){return b.fecha_setup.localeCompare(a.fecha_setup);}).map(function(e){
+      var col=e.resultado==='target'?'#06D6A0':e.resultado==='stop'?'#EF476F':'#F0B429';
+      var rc2=e.ret_pct>=0?'#06D6A0':'#EF476F';
+      return '<tr>'+
+        '<td class="tt"><a href="'+tvUrl(e.ticker)+'" target="_blank" style="color:var(--t);text-decoration:none">'+e.ticker+'</a></td>'+
+        '<td class="tn" style="font-size:10px;color:var(--d)">'+e.fecha_setup+'</td>'+
+        '<td class="tn">'+e.dias+'d</td>'+
+        '<td class="tn" style="font-size:10px;color:var(--d)">'+e.tipo.substring(0,12)+'</td>'+
+        '<td class="tn">$'+e.precio_entrada+'</td>'+
+        '<td class="tn">$'+e.precio_actual+'</td>'+
+        '<td class="tn" style="color:'+rc2+';font-weight:700">'+(e.ret_pct>=0?'+':'')+e.ret_pct+'%</td>'+
+        '<td class="tn"><b style="color:'+col+'">'+e.resultado+'</b></td>'+
+        '</tr>';
+    }).join('');
+    rc.innerHTML='<div style="overflow-x:auto;background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:10px">'+
+      '<table class="tt2"><thead><tr>'+
+      '<th style="text-align:left">Val</th><th>Fecha</th><th>Dias</th><th>Tipo</th>'+
+      '<th>Entrada</th><th>Actual</th><th>Ret%</th><th>Result</th>'+
+      '</tr></thead><tbody>'+erows+'</tbody></table></div>';
+  }
+}
+
+// ── CARGA DE DATOS ───────────────────────────────────────────────────
+var PERSONAL_GROUPS=['Semiconductores','Infraestructura AI','Espacio y Defensa','Cuantica',
+  'Robotica AI','Crypto Fintech','Minerales','Biotech','Hardware','Momentum'];
+
+function loadData(){
+  var nc='?nc='+Date.now();
+  Promise.all([
+    fetch(DATA_URL+nc).then(function(r){return r.json();}),
+    fetch(HIST_URL+nc).then(function(r){return r.json();}).catch(function(){return [];})
+  ]).then(function(results){
+    renderAll(results[0], results[1]);
+  }).catch(function(e){
+    console.error('Error cargando datos:',e);
+    document.getElementById('ts').textContent='Error al cargar datos. Recarga la pagina.';
+  });
+}
+
+loadData();
+</script>
+</body>
+</html>
