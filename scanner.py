@@ -27,7 +27,6 @@ PERSONAL_WATCHLIST = {
     'Espacio y Defensa': ['RKLB','LUNR','ASTS','KTOS','BWXT'],
     'Cuantica': ['IONQ'],
     'Robotica AI': ['BBAI','TSLA'],
-    'Crypto Fintech': ['RDDT'],
     'Minerales': ['MP','UAMY'],
     'Biotech': ['VKTX','ACRV','IBRX'],
     'Hardware': ['SNDK'],
