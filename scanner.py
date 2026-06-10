@@ -27,7 +27,6 @@ PERSONAL_WATCHLIST = {
     'Espacio y Defensa': ['RKLB','LUNR','ASTS','KTOS','BWXT'],
     'Cuantica': ['IONQ'],
     'Robotica AI': ['BBAI','TSLA'],
-    'Crypto Fintech': ['RDDT'],
     'Minerales': ['MP','UAMY'],
     'Biotech': ['VKTX','ACRV','IBRX'],
     'Hardware': ['SNDK'],
@@ -299,7 +298,7 @@ def price_stats(p, h, v_series):
                 'low5':round(float(p.iloc[-5:].min()),2) if len(p)>=5 else round(current*0.95,2)}
     except: return {}
 
-def calc_entry_range(ps, bi, mah):
+def calc_entry_range(ps, bi, mah, atr_val=None):
     try:
         price=ps.get('price')
         if not price: return {}
@@ -309,6 +308,9 @@ def calc_entry_range(ps, bi, mah):
             elo=round(price*0.995,2); ehi=round(price*1.020,2)
             stop=round(max(low5,price*0.930),2)
             if stop>=elo: stop=round(price*0.930,2)
+            # Distancia minima stop: 1 ATR o 2% (lo que sea mayor)
+            min_dist = max(atr_val if atr_val else 0, elo*0.02)
+            if (elo - stop) < min_dist: stop=round(elo - min_dist, 2)
             target=round(price+(price-bl if price>bl else price*0.10),2)
             rr=round((target-ehi)/(ehi-stop),1) if (ehi-stop)>0 else None
             return {'tipo':'Ruptura activa','entry_lo':elo,'entry_hi':ehi,'stop':stop,'target':target,'rr':rr}
@@ -317,10 +319,16 @@ def calc_entry_range(ps, bi, mah):
                     'nota':f'Precio {round((price/bl-1)*100,1)}% sobre ruptura. Esperar MM50=${round(ma50,2) if ma50 else "?"}'}
         if ma50 and abs(price/ma50-1)<0.04:
             elo=round(ma50*0.990,2); ehi=round(ma50*1.010,2); stop=round(ma50*0.950,2); target=round(high52,2)
+            # Distancia minima stop: 1 ATR o 2%
+            min_dist = max(atr_val if atr_val else 0, elo*0.02)
+            if (elo - stop) < min_dist: stop=round(elo - min_dist, 2)
             rr=round((target-ehi)/(ehi-stop),1) if (ehi-stop)>0 else None
             return {'tipo':'Pullback MM50','entry_lo':elo,'entry_hi':ehi,'stop':stop,'target':target,'rr':rr}
         if ma200 and abs(price/ma200-1)<0.04:
             elo=round(ma200*0.990,2); ehi=round(ma200*1.010,2); stop=round(ma200*0.940,2); target=round(ma200*1.20,2)
+            # Distancia minima stop: 1 ATR o 2%
+            min_dist = max(atr_val if atr_val else 0, elo*0.02)
+            if (elo - stop) < min_dist: stop=round(elo - min_dist, 2)
             rr=round((target-ehi)/(ehi-stop),1) if (ehi-stop)>0 else None
             return {'tipo':'Pullback MM200','entry_lo':elo,'entry_hi':ehi,'stop':stop,'target':target,'rr':rr}
         if bl and price<=bl*1.03:
@@ -361,10 +369,12 @@ def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, s
             r4=rs_score(p,bench,20); r13=rs_score(p,bench,65)
             vz=volume_zscore(v) if not v.empty else None
             bi=detect_breakout(p,v) if not v.empty else {'breakout':False,'days_ago':None,'breakout_level':None}
-            mah=ma_health(p); ps=price_stats(p,h,v); er=calc_entry_range(ps,bi,mah)
+            mah=ma_health(p); ps=price_stats(p,h,v)
+            atr_pre=calc_atr(h,l,p) if not h.empty else None
+            er=calc_entry_range(ps,bi,mah,atr_val=atr_pre)
             sc=composite_score(r4,r13,vz,bi['breakout'],mah,spy_healthy)
             # Score de Confirmacion Tecnica (SCT)
-            atr_val = calc_atr(h, l, p) if not h.empty else None
+            atr_val = atr_pre  # ya calculado antes
             rsi_val = calc_rsi(p)
             macd_val, macd_sig, macd_hist = calc_macd(p)
             adx_val = calc_adx(h, l, p) if not h.empty else None
@@ -739,7 +749,36 @@ def main():
         tk=row['Symbol'].replace('.','-')
         if tk not in pt: sbs.setdefault(SECTOR_LABELS.get(row['GICS Sector'],row['GICS Sector']),[]).append(tk)
     sa=list(set(t for grp in sbs.values() for t in grp))
-    print(f'▸ Descargando {len(sa)} valores S&P 500...')
+
+    # Ampliar con Nasdaq 100 y SOX (valores no duplicados)
+    nasdaq100_extra = [
+        'ABNB','ADSK','ALGN','ANSS','ASML','BIDU','BIIB',
+        'CDNS','CHTR','CPRT','CTSH','DDOG','DLTR','DOCU','DXCM',
+        'EA','EBAY','FAST','FSLR','FTNT','GFS',
+        'IDXX','ILMN','KDP','KHC','LULU','MAR','MCHP','MDLZ',
+        'MNST','MRNA','MRVL','NTES','ODFL','OKTA','ON','ORLY',
+        'PANW','PAYX','PCAR','PDD','PYPL','QCOM','REGN','ROST',
+        'SNPS','SWKS','TEAM','TMUS','TSCO',
+        'TTD','TTWO','TXN','VRSK','VRSN','VRTX','WBD','XEL','ZM','ZS'
+    ]
+    sox_extra = [
+        'ACLS','ADI','AEHR','AMAT','AMKR','ASML','AZTA','COHU',
+        'ENTG','ENVX','GFS','IPGP','KLAC','LRCX','MCHP',
+        'MKSI','MPWR','MRVL','ONTO','POWI','QRVO','RMBS','SITM',
+        'SWKS','SYNA','TER','TSM','UCTT','WOLF'
+    ]
+    todos_extra = list(set(nasdaq100_extra + sox_extra))
+    ya_incluidos = set(pt + sa)
+    for tk in todos_extra:
+        if tk not in ya_incluidos:
+            # Clasificar en sector apropiado
+            if tk in sox_extra:
+                sbs.setdefault('Semiconductores SOX', []).append(tk)
+            else:
+                sbs.setdefault('Nasdaq 100', []).append(tk)
+    sa = list(set(t for grp in sbs.values() for t in grp))
+    print(f'  Ampliado con Nasdaq 100 y SOX: {len(sa)} valores totales')
+    print(f'▸ Descargando {len(sa)} valores (S&P 500 + Nasdaq 100 + SOX)...')
     cs,vs,hs,ls=download_prices(sa,period='1y')
     if not cs.empty:
         cache['sp'] = (cs,vs,hs,ls)
