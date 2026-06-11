@@ -508,7 +508,7 @@ def generate_analysis(data, anthropic_key):
         'Aviso final obligatorio: "Este analisis no constituye asesoramiento financiero."\n\n' + summary
     )
     import httpx
-    msg=client.messages.create(model='claude-fable-5',max_tokens=2500,messages=[{'role':'user','content':prompt}], timeout=httpx.Timeout(120.0, connect=30.0))
+    msg=client.messages.create(model='claude-fable-5',max_tokens=3000,messages=[{'role':'user','content':prompt}], timeout=httpx.Timeout(120.0, connect=30.0))
     return next(b.text for b in msg.content if hasattr(b, 'text'))
 
 def get_github_file(filename):
