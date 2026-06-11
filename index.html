@@ -180,13 +180,13 @@ body{background:var(--bg);color:var(--t);font-family:var(--font);font-size:14px;
   </div>
   <div class="man-section">
     <h2>La pestana Temas</h2>
-    <p>Muestra todos los grupos tematicos ordenados de mayor a menor score.</p>
+    <p>Muestra todos los grupos tematicos ordenados de mayor a menor score. Cada tarjeta representa un sector o grupo de valores relacionados.</p>
     <div class="metric-card"><div class="metric-name">Numero de ranking</div><div class="metric-desc">El #1 es el tema con mayor momentum.</div></div>
     <div class="metric-card"><div class="metric-name">Etiqueta WL</div><div class="metric-desc">Pertenece a tu watchlist personal.</div></div>
     <div class="metric-card"><div class="metric-name">Nv RS:X% UP:X</div><div class="metric-desc">N valores analizados, fuerza relativa media, rupturas activas.</div></div>
     <div class="metric-card"><div class="metric-name">Sparkline</div><div class="metric-desc">Evolucion del score en los ultimos dias. Barras crecientes = momentum ganando fuerza.</div></div>
     <div class="metric-card"><div class="metric-name">Flecha con numero</div><div class="metric-desc">Variacion del score respecto al dia anterior. Verde = dinero entrando. Rojo = saliendo.</div></div>
-    <div class="metric-card"><div class="metric-name">Lideres en verde</div><div class="metric-desc">Los 3 valores con mayor score del tema. El asterisco indica ruptura tecnica activa.</div></div>
+    <div class="metric-card"><div class="metric-name">Lideres (tickers en verde)</div><div class="metric-desc">Los 3 valores con mayor score del tema. El asterisco (*) indica ruptura tecnica activa.</div></div>
   </div>
   <div class="man-section">
     <h2>SCT Score de Confirmacion Tecnica</h2>
@@ -210,15 +210,16 @@ body{background:var(--bg);color:var(--t);font-family:var(--font);font-size:14px;
     <div class="metric-card"><div class="metric-name" style="color:#06D6A0">Target</div><div class="metric-desc">El precio alcanzo el objetivo. El setup funciono.</div></div>
     <div class="metric-card"><div class="metric-name" style="color:#EF476F">Stop</div><div class="metric-desc">El precio bajo hasta el stop. Setup no funciono en este caso.</div></div>
     <div class="metric-card"><div class="metric-name" style="color:#F0B429">Abierto</div><div class="metric-desc">El precio sigue entre entrada y objetivo o stop.</div></div>
-    <div class="note">Los datos aparecen a partir del quinto dia de ejecucion.</div>
+    <div class="note">Los datos aparecen a partir del quinto dia de ejecucion. Las evaluaciones se calculan en sesiones de trading.</div>
   </div>
   <div class="man-section">
     <h2>Flujo de trabajo diario</h2>
     <div class="step"><div class="step-num">1</div><div class="step-text">La web se actualiza automaticamente cada noche de lunes a viernes a las 23:00h.</div></div>
     <div class="step"><div class="step-num">2</div><div class="step-text">Ejecuta Colab cuando necesites el analisis de Claude y las alertas de Telegram.</div></div>
     <div class="step"><div class="step-num">3</div><div class="step-text">Mira la barra de momentum. Si es mayoritariamente roja, el mercado es muy selectivo.</div></div>
-    <div class="step"><div class="step-num">4</div><div class="step-text">Lee el analisis en la pestana Analisis. Los $TICKERS en amarillo son los de la seccion ENTRADAS — pulsa para abrir en TradingView.</div></div>
-    <div class="step"><div class="step-num">5</div><div class="step-text">Verifica siempre en el grafico real. El dashboard dice donde mirar, no que comprar.</div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-text">Lee el analisis en la pestana Analisis. Los tickers en amarillo son los de la seccion ENTRADAS.</div></div>
+    <div class="step"><div class="step-num">5</div><div class="step-text">Pulsa un ticker amarillo para abrirlo en TradingView.</div></div>
+    <div class="step"><div class="step-num">6</div><div class="step-text">Verifica siempre en el grafico real. El dashboard dice donde mirar, no que comprar.</div></div>
     <div class="good">Regla de oro: tema mas fuerte, valor lider, entrada con volumen confirmado.</div>
   </div>
   <div class="man-section">
@@ -235,6 +236,7 @@ body{background:var(--bg);color:var(--t);font-family:var(--font);font-size:14px;
 var DATA_URL='https://raw.githubusercontent.com/Carolo-III/scanner-temas/main/data.json';
 var HIST_URL='https://raw.githubusercontent.com/Carolo-III/scanner-temas/main/history.json';
 var PERSONAL_GROUPS=['Semiconductores','Infraestructura AI','Espacio y Defensa','Cuantica','Robotica AI','Minerales','Biotech','Hardware','Momentum'];
+
 function vc(v){if(v===null||v===undefined)return 'var(--d)';return v>=0?'#06D6A0':'#EF476F';}
 function sc(s){if(!s)return 'var(--d)';if(s>=70)return '#06D6A0';if(s>=50)return '#F0B429';if(s>=30)return '#FB923C';return '#EF476F';}
 function fmtS(v){if(v===null||v===undefined)return '-';return (v>=0?'+':'')+v.toFixed(1);}
@@ -242,9 +244,11 @@ function fmtP(v){if(v===null||v===undefined)return '-';return v.toFixed(1);}
 function rsiColor(v){if(!v)return 'var(--d)';if(v>=55&&v<=70)return '#06D6A0';if(v>=50&&v<55)return '#F0B429';if(v>70)return '#FB923C';return '#EF476F';}
 function adxColor(v){if(!v)return 'var(--d)';if(v>=40)return '#06D6A0';if(v>=25)return '#F0B429';return '#EF476F';}
 function maStr(m){
-  return (m.ma20?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>')+
-         (m.ma50?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>')+
-         (m.ma200?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>');
+  var r='';
+  r+=(m.ma20?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>');
+  r+=(m.ma50?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>');
+  r+=(m.ma200?'<span style="color:#06D6A0">Y</span>':'<span style="color:#EF476F">N</span>');
+  return r;
 }
 function tvUrl(tk){return 'https://www.tradingview.com/chart/?symbol='+tk;}
 function sp(id){
@@ -278,13 +282,15 @@ function buildMomentumBar(groups){
   var weak=groups.filter(function(g){return g.score>=30&&g.score<50;}).length;
   var none=groups.filter(function(g){return g.score<30;}).length;
   var total=groups.length||1;
-  return '<div class="mb"><div class="mb-title">Concentracion del Momentum &mdash; '+total+' temas</div>'+
+  return '<div class="mb">'+
+    '<div class="mb-title">Concentracion del Momentum &mdash; '+total+' temas</div>'+
     '<div class="mb-track">'+
     '<div class="mb-seg" style="width:'+(strong/total*100).toFixed(1)+'%;background:#06D6A0"></div>'+
     '<div class="mb-seg" style="width:'+(medium/total*100).toFixed(1)+'%;background:#F0B429"></div>'+
     '<div class="mb-seg" style="width:'+(weak/total*100).toFixed(1)+'%;background:#FB923C"></div>'+
     '<div class="mb-seg" style="width:'+(none/total*100).toFixed(1)+'%;background:#EF476F"></div>'+
-    '</div><div class="mb-legend">'+
+    '</div>'+
+    '<div class="mb-legend">'+
     '<div class="mb-leg"><div class="mb-dot" style="background:#06D6A0"></div>Fuerte (70+) <b class="mb-count">'+strong+'</b></div>'+
     '<div class="mb-leg"><div class="mb-dot" style="background:#F0B429"></div>Emergente (50-69) <b class="mb-count">'+medium+'</b></div>'+
     '<div class="mb-leg"><div class="mb-dot" style="background:#FB923C"></div>Debil (30-49) <b class="mb-count">'+weak+'</b></div>'+
@@ -293,27 +299,38 @@ function buildMomentumBar(groups){
 }
 function sparkline(scores){
   if(!scores||scores.length<2)return '';
-  var min=Math.min.apply(null,scores),max=Math.max.apply(null,scores),range=max-min||1;
+  var min=Math.min.apply(null,scores);
+  var max=Math.max.apply(null,scores);
+  var range=max-min||1;
   return '<span class="spark">'+scores.map(function(s){
     var h=Math.round(((s-min)/range)*16)+4;
     return '<div class="spark-bar" style="height:'+h+'px"></div>';
   }).join('')+'</span>';
 }
+
 function renderAll(data,history){
   window._allResults=data.values||[];
   window._lastData=data;
-  var ar=data.values||[],allG=data.groups||[],ts=data.timestamp||'';
+  var ar=data.values||[];
+  var allG=data.groups||[];
+  var ts=data.timestamp||'';
   var bos=ar.filter(function(r){return r.breakout;}).sort(function(a,b){return (b.score||0)-(a.score||0);});
+
+  // Header
   document.getElementById('ts').textContent='Actualizado: '+ts;
+
+  // SPY strip
   if(data.spy_ret_1w!==null&&data.spy_ret_1w!==undefined){
-    var s1w=data.spy_ret_1w,s1m=data.spy_ret_1m;
+    var s1w=data.spy_ret_1w;var s1m=data.spy_ret_1m;
     document.getElementById('spy-1w').outerHTML='<span id="spy-1w" style="color:'+(s1w>=0?'#06D6A0':'#EF476F')+';font-weight:600">'+(s1w>=0?'+':'')+s1w+'%</span>';
     document.getElementById('spy-1m').outerHTML='<span id="spy-1m" style="color:'+(s1m>=0?'#06D6A0':'#EF476F')+';font-weight:600">'+(s1m>=0?'+':'')+s1m+'%</span>';
     document.getElementById('spy-estado').outerHTML='<span id="spy-estado" style="color:'+(data.spy_healthy?'#06D6A0':'#EF476F')+';font-weight:600">'+(data.spy_healthy?'Sobre MM200':'Bajo MM200')+'</span>';
     document.getElementById('spy-strip').style.display='block';
   }
+
+  // Macro strip
   if(data.macro){
-    var vix=data.macro['^VIX']||{},dxy=data.macro['DX-Y.NYB']||{},usy=data.macro['^TNX']||{};
+    var vix=data.macro['^VIX']||{};var dxy=data.macro['DX-Y.NYB']||{};var usy=data.macro['^TNX']||{};
     function fmMacro(val,chg,inv){
       if(!val)return '-';
       var col=inv?(chg>=0?'#EF476F':'#06D6A0'):(chg>=0?'#06D6A0':'#EF476F');
@@ -324,23 +341,35 @@ function renderAll(data,history){
     document.getElementById('m-usy').innerHTML=fmMacro(usy.current,usy.chg_pct,false);
     document.getElementById('macro-strip').style.display='block';
   }
+
+  // Summary
   document.getElementById('n-temas').textContent=allG.length;
   document.getElementById('n-vals').textContent=ar.length;
   document.getElementById('n-bos').textContent=bos.length;
   var avgScore=allG.length?allG.reduce(function(a,g){return a+g.score;},0)/allG.length:0;
   document.getElementById('n-score').textContent=avgScore.toFixed(1);
+
+  // Historial scores
   var prevScores={};
   if(history&&history.length>=2)prevScores=history[history.length-2].scores||{};
+
+  // Momentum bar
   document.getElementById('mb-container').innerHTML=buildMomentumBar(allG);
+
+  // CARDS
   if(!allG.length){
     document.getElementById('cards-container').innerHTML='<div class="no-data"><b>Sin datos todavia</b>Ejecuta el notebook en Colab.</div>';
   }else{
-    document.getElementById('cards-container').innerHTML=allG.map(function(g,idx){
-      var scoreColor=sc(g.score),prev=prevScores[g.group],arrow='';
+    var cards=allG.map(function(g,idx){
+      var scoreColor=sc(g.score);
+      var prev=prevScores[g.group];
+      var arrow='';
       if(prev!==undefined){var diff=g.score-prev;if(diff>2)arrow='<div class="card-arrow" style="color:#06D6A0">&#9650; +'+diff.toFixed(1)+'</div>';else if(diff<-2)arrow='<div class="card-arrow" style="color:#EF476F">&#9660; '+diff.toFixed(1)+'</div>';}
       var spScores=[];
       if(history)history.forEach(function(h){if(h.scores&&h.scores[g.group]!==undefined)spScores.push(h.scores[g.group]);});
-      var leaders=(g.top3||[]).map(function(m){return '<a href="'+tvUrl(m.ticker)+'" target="_blank" style="color:var(--gr);text-decoration:none">'+m.ticker+(m.breakout?'*':'')+'</a><small style="color:var(--d)">('+m.score+')</small>';}).join(' &middot; ');
+      var leaders=(g.top3||[]).map(function(m){
+        return '<a href="'+tvUrl(m.ticker)+'" target="_blank" style="color:var(--gr);text-decoration:none">'+m.ticker+(m.breakout?'*':'')+'</a><small style="color:var(--d)">('+m.score+')</small>';
+      }).join(' &middot; ');
       var rows=(g.members||[]).map(function(m){
         return '<tr><td class="ttt"><a href="'+tvUrl(m.ticker)+'" target="_blank" style="color:var(--t);text-decoration:none">'+m.ticker+(m.breakout?'*':'')+'</a></td>'+
           '<td class="tn" style="color:'+vc(m.rs_4w)+'">'+fmtS(m.rs_4w)+'%</td>'+
@@ -350,26 +379,35 @@ function renderAll(data,history){
           '<td class="tn" style="color:'+rsiColor(m.rsi)+'">'+(m.rsi||'-')+'</td>'+
           '<td class="tn" style="color:'+adxColor(m.adx)+'">'+(m.adx||'-')+'</td>'+
           '<td class="tn"><b style="color:'+sc(m.sct||0)+'">'+(m.sct||'-')+'</b></td>'+
-          '<td class="tn"><b style="color:'+sc(m.score)+'">'+fmtP(m.score)+'</b></td></tr>';
+          '<td class="tn"><b style="color:'+sc(m.score)+'">'+fmtP(m.score)+'</b></td>'+
+          '</tr>';
       }).join('');
       return '<div class="card" onclick="tog(this)">'+
-        '<div class="card-header"><div class="card-rank">#'+(idx+1)+'</div>'+
-        '<div class="card-info"><div class="card-name">'+g.group+(g.is_sp?'':' <span class="wl-badge">WL</span>')+'</div>'+
+        '<div class="card-header">'+
+        '<div class="card-rank">#'+(idx+1)+'</div>'+
+        '<div class="card-info">'+
+        '<div class="card-name">'+g.group+(g.is_sp?'':' <span class="wl-badge">WL</span>')+'</div>'+
         '<div class="card-meta">'+g.n+'v &middot; RS:'+g.rs_mean+'% &middot; UP:'+g.breakouts+sparkline(spScores)+'</div>'+
-        '<div class="card-leaders">'+leaders+'</div></div>'+
-        '<div style="text-align:center"><div class="card-score" style="color:'+scoreColor+';border-color:'+scoreColor+'">'+g.score.toFixed(1)+'</div>'+arrow+'</div></div>'+
+        '<div class="card-leaders">'+leaders+'</div>'+
+        '</div>'+
+        '<div style="text-align:center"><div class="card-score" style="color:'+scoreColor+';border-color:'+scoreColor+'">'+g.score.toFixed(1)+'</div>'+arrow+'</div>'+
+        '</div>'+
         '<div class="card-body"><table class="tt2"><thead><tr>'+
         '<th style="text-align:left">Val</th><th>RS4s</th><th>RS13s</th><th>Vols</th><th>MAs</th><th>RSI</th><th>ADX</th><th>SCT</th><th>Sc</th>'+
         '</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
     }).join('');
+    document.getElementById('cards-container').innerHTML=cards;
   }
+
+  // VALORES
   var entradaTickers={};
   if(data.analisis){
     var ms=data.analisis.match(/\$([A-Z]{2,5})/g);
     if(ms)ms.forEach(function(m){entradaTickers[m.replace('$','')]=true;});
   }
   window._entradaTickers=entradaTickers;
-  document.getElementById('vals-body').innerHTML=ar.map(function(m){
+
+  var vrows=ar.map(function(m){
     var p52=m.pct_from_high!==null&&m.pct_from_high!==undefined?fmtS(m.pct_from_high)+'%':'-';
     var r1m=m.ret_1m!==null&&m.ret_1m!==undefined?fmtS(m.ret_1m)+'%':'-';
     var pr=m.price?'$'+m.price.toFixed(2):'-';
@@ -388,28 +426,40 @@ function renderAll(data,history){
       '<td class="tn" style="color:'+rsiColor(m.rsi)+'">'+(m.rsi!==null&&m.rsi!==undefined?m.rsi:'-')+'</td>'+
       '<td class="tn" style="color:'+adxColor(m.adx)+'">'+(m.adx!==null&&m.adx!==undefined?m.adx:'-')+'</td>'+
       '<td class="tn"><b style="color:'+sc(m.sct||0)+'">'+(m.sct!==null&&m.sct!==undefined?m.sct:'-')+'</b></td>'+
-      '<td class="tn"><b style="color:'+sc(m.score)+'">'+fmtP(m.score)+'</b></td></tr>';
-  }).join('')||'<tr><td colspan="13" style="text-align:center;padding:20px;color:var(--d)">Sin datos</td></tr>';
+      '<td class="tn"><b style="color:'+sc(m.score)+'">'+fmtP(m.score)+'</b></td>'+
+      '</tr>';
+  }).join('');
+  document.getElementById('vals-body').innerHTML=vrows||'<tr><td colspan="13" style="text-align:center;padding:20px;color:var(--d)">Sin datos</td></tr>';
+
+  // RUPTURAS
   if(!bos.length){
     document.getElementById('rup-container').innerHTML='<p style="color:var(--d);text-align:center;padding:16px">Sin rupturas activas</p>';
   }else{
     document.getElementById('rup-container').innerHTML=bos.slice(0,20).map(function(r){
       var esHoy=r.days_ago===1;
       var badge=esHoy?'<span class="bo-hoy">HOY</span>':'<span class="bo-viejo">Hace '+r.days_ago+'d</span>';
-      return '<div class="ai"><div class="at"><a href="'+tvUrl(r.ticker)+'" target="_blank" style="color:'+(esHoy?'#06D6A0':'var(--d)')+';text-decoration:none;font-weight:'+(esHoy?'900':'500')+'">'+r.ticker+'</a>'+badge+'</div>'+
+      return '<div class="ai">'+
+        '<div class="at"><a href="'+tvUrl(r.ticker)+'" target="_blank" style="color:'+(esHoy?'#06D6A0':'var(--d)')+';text-decoration:none;font-weight:'+(esHoy?'900':'500')+'">'+r.ticker+'</a>'+badge+'</div>'+
         '<div class="ain"><b>'+r.group+'</b><br><small>RS:'+fmtS(r.rs_4w)+'% &middot; Vol:'+fmtP(r.vol_z)+'s</small></div>'+
-        '<div style="font-size:20px;font-weight:900;color:'+sc(r.score)+'">'+r.score+'</div></div>';
+        '<div style="font-size:20px;font-weight:900;color:'+sc(r.score)+'">'+r.score+'</div>'+
+        '</div>';
     }).join('');
   }
+
+  // ANALISIS
   var ac=document.getElementById('analisis-container');
   if(data.analisis){
-    var analisisHtml=data.analisis.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    analisisHtml=analisisHtml.replace(/\$([A-Z]{2,5})/g,function(match,tk){
-      return '<span class="entrada-tk" onclick="window.open(\'https://www.tradingview.com/chart/?symbol='+tk+'\',\'_blank\')">$'+tk+'</span>';
-    });
+    // Escapar HTML
+    var analisisHtml=data.analisis
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Hacer clicables los $TICKERS
+    analisisHtml=analisisHtml.replace(/\$([A-Z]{2,5})/g,
+      '<span class="entrada-tk" onclick="window.open(&quot;https://www.tradingview.com/chart/?symbol=$1&quot;,&quot;_blank&quot;)">$$$1</span>');
     ac.innerHTML='<div class="analisis-ts">Generado: '+ts+' &middot; <small>Pulsa un $TICKER para TradingView</small></div>'+
       '<div class="analisis-box">'+analisisHtml+'</div>';
   }
+
+  // RENDIMIENTO
   var evals=data.evaluaciones||[];
   var rs=document.getElementById('rend-stats');
   var rc=document.getElementById('rend-container');
@@ -420,35 +470,44 @@ function renderAll(data,history){
     var nOk=evals.filter(function(e){return e.resultado==='target';}).length;
     var nStop=evals.filter(function(e){return e.resultado==='stop';}).length;
     var retM=evals.length?(evals.reduce(function(a,e){return a+e.ret_pct;},0)/evals.length).toFixed(1):0;
-    rs.innerHTML='<div class="sv"><div class="sn" style="color:#06D6A0">'+nOk+'</div><div class="sl">Target</div></div>'+
+    rs.innerHTML=
+      '<div class="sv"><div class="sn" style="color:#06D6A0">'+nOk+'</div><div class="sl">Target</div></div>'+
       '<div class="sv"><div class="sn" style="color:#EF476F">'+nStop+'</div><div class="sl">Stop</div></div>'+
       '<div class="sv"><div class="sn" style="color:#F0B429">'+retM+'%</div><div class="sl">Ret medio</div></div>';
+    var erows=evals.sort(function(a,b){return b.fecha_setup.localeCompare(a.fecha_setup);}).map(function(e){
+      var col=e.resultado==='target'?'#06D6A0':e.resultado==='stop'?'#EF476F':'#F0B429';
+      var rc2=e.ret_pct>=0?'#06D6A0':'#EF476F';
+      return '<tr>'+
+        '<td class="tt"><a href="'+tvUrl(e.ticker)+'" target="_blank" style="color:var(--t);text-decoration:none">'+e.ticker+'</a></td>'+
+        '<td class="tn" style="font-size:10px;color:var(--d)">'+e.fecha_setup+'</td>'+
+        '<td class="tn">'+e.dias+'d</td>'+
+        '<td class="tn" style="font-size:10px;color:var(--d)">'+e.tipo.substring(0,12)+'</td>'+
+        '<td class="tn">$'+e.precio_entrada+'</td>'+
+        '<td class="tn">$'+e.precio_actual+'</td>'+
+        '<td class="tn" style="color:'+rc2+';font-weight:700">'+(e.ret_pct>=0?'+':'')+e.ret_pct+'%</td>'+
+        '<td class="tn"><b style="color:'+col+'">'+e.resultado+'</b></td>'+
+        '</tr>';
+    }).join('');
     rc.innerHTML='<div style="overflow-x:auto;background:var(--bg2);border:1px solid var(--border);border-radius:11px;padding:10px">'+
-      '<table class="tt2"><thead><tr><th style="text-align:left">Val</th><th>Fecha</th><th>Dias</th><th>Tipo</th><th>Entrada</th><th>Actual</th><th>Ret%</th><th>Result</th></tr></thead><tbody>'+
-      evals.sort(function(a,b){return b.fecha_setup.localeCompare(a.fecha_setup);}).map(function(e){
-        var col=e.resultado==='target'?'#06D6A0':e.resultado==='stop'?'#EF476F':'#F0B429';
-        var rc2=e.ret_pct>=0?'#06D6A0':'#EF476F';
-        return '<tr><td class="tt"><a href="'+tvUrl(e.ticker)+'" target="_blank" style="color:var(--t);text-decoration:none">'+e.ticker+'</a></td>'+
-          '<td class="tn" style="font-size:10px;color:var(--d)">'+e.fecha_setup+'</td>'+
-          '<td class="tn">'+e.dias+'d</td>'+
-          '<td class="tn" style="font-size:10px;color:var(--d)">'+e.tipo.substring(0,12)+'</td>'+
-          '<td class="tn">$'+e.precio_entrada+'</td><td class="tn">$'+e.precio_actual+'</td>'+
-          '<td class="tn" style="color:'+rc2+';font-weight:700">'+(e.ret_pct>=0?'+':'')+e.ret_pct+'%</td>'+
-          '<td class="tn"><b style="color:'+col+'">'+e.resultado+'</b></td></tr>';
-      }).join('')+'</tbody></table></div>';
+      '<table class="tt2"><thead><tr>'+
+      '<th style="text-align:left">Val</th><th>Fecha</th><th>Dias</th><th>Tipo</th><th>Entrada</th><th>Actual</th><th>Ret%</th><th>Result</th>'+
+      '</tr></thead><tbody>'+erows+'</tbody></table></div>';
   }
 }
+
 function loadData(){
   var nc='?nc='+Date.now();
   Promise.all([
     fetch(DATA_URL+nc).then(function(r){return r.json();}),
     fetch(HIST_URL+nc).then(function(r){return r.json();}).catch(function(){return [];})
-  ]).then(function(results){renderAll(results[0],results[1]);})
-  .catch(function(e){
+  ]).then(function(results){
+    renderAll(results[0],results[1]);
+  }).catch(function(e){
     console.error('Error cargando datos:',e);
     document.getElementById('ts').textContent='Error al cargar datos. Recarga la pagina.';
   });
 }
+
 loadData();
 </script>
 </body>
