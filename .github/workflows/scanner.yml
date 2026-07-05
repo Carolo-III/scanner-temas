@@ -39,6 +39,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
+          FMP_KEY: ${{ secrets.FMP_KEY }}
         run: python scanner.py
 
       - name: Commit y push de datos actualizados
