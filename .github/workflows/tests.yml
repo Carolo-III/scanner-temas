@@ -1,0 +1,29 @@
+name: Tests
+
+# PUNTO 21 (15/07/2026) — Barrera de CI del scanner.
+# Se ejecuta al hacer push de codigo o tests (no cada noche: la ejecucion nocturna
+# ya tiene su propio workflow). Si la paridad scanner.py <-> Celda 2 se rompe, o
+# cualquier invariante del sistema falla, el push queda en rojo ANTES de que la
+# siguiente ejecucion nocturna use codigo desincronizado.
+
+on:
+  push:
+    paths:
+      - 'scanner.py'
+      - 'Scanner_Temas_V001.ipynb'
+      - 'tests/**'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependencias
+        run: pip install numpy pandas yfinance requests pytest
+      - name: Ejecutar tests
+        run: pytest tests/ -v --tb=short
