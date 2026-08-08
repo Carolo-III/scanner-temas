@@ -1621,16 +1621,42 @@ def get_calendario_macro():
             '2026-09-04', '2026-10-02', '2026-11-06', '2026-12-04'],
     }
 
-def check_eventos_macro(umbral_dias=2, hoy=None):
+HORA_PUBLICACION_ET = {'FOMC': 14, 'IPC': 9, 'NFP': 9}   # hora ET a partir de la cual el dato YA se conocio
+
+def _evento_ya_publicado(nombre, dias_habiles, ahora_ny):
+    """PUNTO 51 (08/08/2026) — ¿el evento de HOY ya se ha publicado?
+
+    El P23 solo manejaba fechas, asi que el dia del evento marcaba 0 dias habiles y se
+    anunciaba como pendiente hasta la medianoche. Fallo real: la nocturna de las 23:39
+    del 07/08 decia "HOY se publica el NFP" y recomendaba esperar al dato, cuando
+    llevaba nueve horas publicado, ya estaba en los precios del panel y habia provocado
+    un +35% en TEAM. Recomendar prudencia ante un evento consumado es peor que callar.
+
+    Se distingue por tipo porque no todos salen a la misma hora: IPC y NFP a las 08:30
+    ET (se da por publicado a las 09:00, con margen) y la decision del FOMC a las 14:00.
+    Solo aplica al dia del evento; para los futuros la pregunta no tiene sentido.
+    """
+    if dias_habiles != 0:
+        return False
+    clave = next((k for k in HORA_PUBLICACION_ET if nombre.upper().startswith(k)), None)
+    if clave is None:
+        return False
+    return ahora_ny.hour >= HORA_PUBLICACION_ET[clave]
+
+def check_eventos_macro(umbral_dias=2, hoy=None, ahora=None):
     """Eventos macro programados en los proximos `umbral_dias` dias habiles
     (incluido hoy: un evento esta mañana antes de la apertura sigue siendo riesgo
-    para posiciones abiertas esta noche). `hoy` inyectable para tests.
-    Devuelve lista de dicts {evento, fecha, dias_habiles} ordenada por proximidad.
-    Si el calendario esta agotado (ultima fecha en el pasado), avisa en el log del
-    refresco anual pendiente — el fallo silencioso seria quedarse ciego sin saberlo.
+    para posiciones abiertas esta noche). `hoy` y `ahora` inyectables para tests.
+    Devuelve lista de dicts {evento, fecha, dias_habiles, ya_publicado} ordenada por
+    proximidad. Si el calendario esta agotado (ultima fecha en el pasado), avisa en el
+    log del refresco anual pendiente — el fallo silencioso seria quedarse ciego sin saberlo.
     """
+    if ahora is None:
+        ahora = pd.Timestamp.now(tz='America/New_York').tz_localize(None)
+    else:
+        ahora = pd.Timestamp(ahora)
     if hoy is None:
-        hoy = pd.Timestamp.now(tz='America/New_York').tz_localize(None).normalize()
+        hoy = ahora.normalize()
     else:
         hoy = pd.Timestamp(hoy).normalize()
     proximos = []
@@ -1644,7 +1670,8 @@ def check_eventos_macro(umbral_dias=2, hoy=None):
             dias_habiles = max(0, len(pd.bdate_range(hoy, fecha)) - 1)
             if dias_habiles <= umbral_dias:
                 proximos.append({'evento': evento, 'fecha': str(fecha.date()),
-                                 'dias_habiles': int(dias_habiles)})
+                                 'dias_habiles': int(dias_habiles),
+                                 'ya_publicado': _evento_ya_publicado(evento, dias_habiles, ahora)})
     if ultima_fecha < hoy:
         print('  AVISO CALENDARIO MACRO: agotado (ultima fecha ' +
               str(ultima_fecha.date()) + ') — pendiente el refresco anual de fechas')
@@ -1654,10 +1681,24 @@ def formato_eventos_macro_summary(eventos):
     """PUNTO 23 — bloque de texto para el summary del prompt."""
     if not eventos:
         return ''
-    s = '\nEVENTOS MACRO PROGRAMADOS PROXIMOS (riesgo de gap a escala de mercado):\n'
-    for e in eventos:
-        cuando = 'HOY' if e['dias_habiles'] == 0 else f"en {e['dias_habiles']} dia(s) habil(es)"
-        s += f"- {e['evento']}: {e['fecha']} ({cuando})\n"
+    pendientes = [e for e in eventos if not e.get('ya_publicado')]
+    publicados = [e for e in eventos if e.get('ya_publicado')]
+    s = ''
+    if pendientes:
+        s += '\nEVENTOS MACRO PROGRAMADOS PROXIMOS (riesgo de gap a escala de mercado):\n'
+        for e in pendientes:
+            cuando = 'HOY, AUN POR PUBLICAR' if e['dias_habiles'] == 0 else f"en {e['dias_habiles']} dia(s) habil(es)"
+            s += f"- {e['evento']}: {e['fecha']} ({cuando})\n"
+    # PUNTO 51 — un evento ya publicado NO es riesgo de gap: es contexto de lo que ya
+    # ha movido los precios de esta sesion. Se separa para que el informe deje de
+    # recomendar esperar a un dato consumado.
+    if publicados:
+        s += '\nEVENTOS MACRO YA PUBLICADOS HOY (el dato YA esta en los precios de esta sesion):\n'
+        for e in publicados:
+            s += f"- {e['evento']}: {e['fecha']} — YA PUBLICADO\n"
+        s += ('NO recomiendes esperar a estos datos ni los presentes como riesgo de gap pendiente: '
+              'ya han ocurrido. Si el movimiento de la sesion es coherente con ellos, dilo; si no '
+              'dispones de la cifra concreta, limitate a señalar que la sesion ya los incorpora.\n')
     return s
 
 
