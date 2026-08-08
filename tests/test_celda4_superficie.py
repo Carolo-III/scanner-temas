@@ -238,7 +238,7 @@ def test_cobertura_de_la_lista_de_orquestacion():
                  if isinstance(n, ast.FunctionDef)}
     llamadas_main = set(_llamadas(_main_de_scanner())) & definidas
     # Auxiliares que no son etapas del pipeline y no necesitan espejo.
-    auxiliares = {'clean_nan', '_traza', 'get_github_file', 'upload_files_to_github',
+    auxiliares = {'clean_nan', '_traza', 'rescatar_analisis_anterior', 'get_github_file', 'upload_files_to_github',
                   'upload_to_github', 'dedup_alertas_por_ticker', 'resoluciones_por_ticker', 'spy_health',
                   'download_prices', 'check_data_health', 'calc_pendientes_curva',
                   'construir_entrada_breadth', 'construir_entrada_rates',
