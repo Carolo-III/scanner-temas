@@ -2776,6 +2776,170 @@ def bloque_extendidos(values):
     return summary
 
 
+def bloque_setups(valid, fundamentales):
+    """PUNTO 52 (08/08/2026) — texto de SETUPS VALIDOS: un parrafo por candidato.
+
+    Es el bloque mas grande del prompt (149 lineas) y el ultimo que quedaba dentro de
+    construir_prompt. Extraido sin cambiar una letra.
+
+    A pesar de su tamaño es PURO: cuando se ejecuta, las llamadas a red ya se han hecho
+    (get_news_earnings y los fundamentales vienen resueltos dentro de `valid` y del dict
+    `fundamentales`). Por eso se puede probar con datos fijos, que era el criterio de
+    esta fase: separar lo que sale a la red de lo que solo ensambla texto.
+    """
+    summary = ''
+    for v in valid[:5]:
+        er=v['entry_range']
+        rsi_s = v.get("rsi"); adx_s = v.get("adx"); cmf_s = v.get("cmf"); sq_s = v.get("squeeze"); sct_s = v.get("sct")
+        indicadores = []
+        if rsi_s: indicadores.append(f"RSI:{rsi_s}")
+        if adx_s: indicadores.append(f"ADX:{adx_s}")
+        if cmf_s: indicadores.append(f"CMF:{cmf_s}")
+        if sct_s: indicadores.append(f"SCT:{sct_s}")
+        if sq_s: indicadores.append("SQUEEZE")
+        ind_str = " | ".join(indicadores) if indicadores else ""
+        # NUEVO (27/06) — el objetivo es una proyeccion, no un nivel de orden real como entrada/
+        # stop: mostrarlo con 2 decimales ($671.36) da una falsa sensacion de precision que el
+        # mercado no tiene. Se redondea solo para el TEXTO del informe (no afecta al calculo
+        # interno de R/B, que sigue usando el valor exacto). Entrada y stop SI son niveles de
+        # orden reales que Carlos necesita exactos para operar, no se tocan.
+        def _redondeo_display(precio):
+            if precio is None: return precio
+            return round(precio) if precio >= 20 else round(precio, 1)
+        target_disp = _redondeo_display(er.get("target"))
+        target_parcial_disp = _redondeo_display(er.get("target_parcial"))
+        summary+=f'- {v["ticker"]} ({v["group"]}): ${v.get("price","?")} | {er["tipo"]} | Entrada:${er["entry_lo"]}-${er["entry_hi"]} | Stop:${er["stop"]}'
+        # PUNTO 4 — objetivo escalonado: parcial y final
+        if target_parcial_disp is not None: summary+=f' | Obj.parcial:${target_parcial_disp}'
+        summary+=f' | Obj.final:${target_disp}'
+        if ind_str: summary+=f' | {ind_str}'
+        if er.get('rr'): summary+=f' | R/B:1:{er["rr"]}'
+        # PUNTO 33 (01/08/2026) — estimación de tiempo al objetivo en días hábiles
+        # Fórmula: distancia al objetivo / ATR. Se emite como rango (ATR mínimo y máximo
+        # del período disponible) para no dar falsa precisión. Si el ATR es muy bajo
+        # (universo en calma extrema) o la distancia es cero, se omite silenciosamente.
+        # ARREGLO (02/08/2026): la version original pedia er['objetivo'] y er['entrada'],
+        # claves que NO existen en entry_range (son 'target', 'entry_lo', 'entry_hi'). El
+        # bloque devolvia None siempre y la linea no se emitia nunca, en silencio porque
+        # el except de abajo se lo tragaba. Verificado contra data.json de produccion.
+        try:
+            precio_obj = er.get('target')
+            _elo, _ehi = er.get('entry_lo'), er.get('entry_hi')
+            precio_ent = ((_elo + _ehi) / 2) if (_elo and _ehi) else (_elo or _ehi)
+            atr_val = v.get('atr')
+            if precio_obj and precio_ent and atr_val and atr_val > 0:
+                distancia = abs(precio_obj - precio_ent)
+                # CORRECCION DE FORMULA (02/08/2026). La version anterior emitia
+                # distancia/ATR con un rango de +-40% y producia cifras irreales: DOCU
+                # daba "4-9 dias habiles" para un +37%. El error es conceptual, no de
+                # calibracion: el ATR es el rango medio diario ABSOLUTO (incluye el
+                # movimiento en contra), no la deriva neta. distancia/ATR solo seria
+                # correcto si el precio avanzara un ATR entero en la misma direccion
+                # cada sesion, sin un solo dia en contra.
+                #
+                # Los dos extremos teoricos acotan la respuesta:
+                #   n     = distancia/ATR      -> SUELO: avance en linea recta
+                #   n**2  = (distancia/ATR)**2 -> TECHO: paseo aleatorio puro, donde el
+                #                                 desplazamiento neto escala con ATR*sqrt(n)
+                # La realidad (tendencia con retrocesos) cae entre ambos, asi que se emite
+                # el intervalo completo y se etiqueta como ORDEN DE MAGNITUD. Es un rango
+                # ancho a proposito: fingir precision aqui es lo que hacia dano.
+                ratio = distancia / atr_val
+                dias_min = max(1, round(ratio))
+                dias_max = min(250, round(ratio ** 2))   # tope: ~1 año bursatil
+                if dias_max > dias_min:
+                    summary += (f' | Tiempo estimado al objetivo: {dias_min}-{dias_max} sesiones'
+                                f' (orden de magnitud, NO prediccion: {dias_min}=avance en linea'
+                                f' recta, {dias_max}=con retrocesos tipicos; ATR ${round(atr_val,2)}/dia)')
+        except Exception as _e33:
+            # Antes era un pass mudo: un bug de claves sobrevivio asi una jornada entera.
+            print(f'  AVISO P33: no se pudo estimar tiempo al objetivo de {v.get("ticker","?")}: {_e33}')
+        # PUNTO 18 — aviso explicito para que Claude no venda el pullback como retroceso sano
+        if er.get('rsi_sobrecompra'):
+            summary+=' | AVISO: PULLBACK CON RSI EN SOBRECOMPRA (>=70) — el retroceso apenas ha aliviado la sobrecompra'
+        # PUNTO 9 — RVOL informativo (el filtro ya elimino rupturas con RVOL<1.2, pero el valor
+        # exacto sigue siendo util para que Claude calibre la solidez del respaldo de volumen)
+        if v.get('rvol') is not None: summary+=f' | RVOL:{v["rvol"]}x'
+        # PUNTO 12+13 — si el techo del objetivo no es el maximo de 52s por defecto, indicar
+        # el motivo explicito (correccion fuerte posterior invalido el maximo bruto como techo realista)
+        tm = v.get('techo_metodo')
+        if tm and tm not in (None, 'max52', 'sin_datos'):
+            etiqueta_tm = {'fib0.764_post_correccion': 'objetivo acotado a un retroceso del 76.4% de la caida previa (no al maximo de 52s, invalidado por una correccion >20% posterior)',
+                           'fib0.618_post_correccion': 'objetivo acotado a un retroceso del 61.8% de la caida previa (no al maximo de 52s, invalidado por una correccion >20% posterior)',
+                           'fib0.764_post_correccion_sin_atr': 'objetivo acotado a un retroceso del 76.4% de la caida previa (maximo de 52s invalidado por correccion >20%; sin ATR disponible para alternativa)',
+                           'atr_proyectado_post_correccion': 'objetivo proyectado por rango medio (ATR), ya que ni el maximo de 52s ni los retrocesos de Fibonacci de la caida previa dejaban margen suficiente'}.get(tm)
+            if etiqueta_tm: summary+=f' | OBJETIVO: {etiqueta_tm}'
+        # PUNTO 11 — Volume Profile aproximado: POC como referencia de soporte/resistencia
+        # institucional, y aviso explicito cuando entry_lo coincide con VAL (confirma el pullback)
+        vprof = v.get('vol_profile')
+        if vprof:
+            summary+=f' | POC:${vprof["poc"]} VAH:${vprof["vah"]} VAL:${vprof["val"]}'
+            if vprof.get('confirma_pullback'):
+                summary+=' (entrada coincide con VAL — refuerza calidad del pullback)'
+            # NUEVO (05/07) — VAL coincide con la entrada pero esta demasiado cerca del stop
+            # (dentro de la mitad inferior del rango entrada->stop): NO es soporte util. Se
+            # marca explicitamente para que Claude no lo cite como argumento de calidad.
+            elif vprof.get('coincide_val') and not vprof.get('val_valido_como_soporte'):
+                summary+=' (VAL dentro del rango de riesgo, demasiado cerca del stop — NO citarlo como soporte)'
+        summary+=f' | RIESGO:{v.get("riesgo","?")} (motivo exacto: {v.get("riesgo_motivo","?")}) | RANKING:{v.get("ranking","?")}'
+        # PUNTO 19 — desglose auditable del ranking
+        dsg = v.get('ranking_desglose')
+        if dsg:
+            summary+=f' (desglose: SCT {dsg["sct"]}/40 + R/B {dsg["rb"]}/20 + sector {dsg["sector"]}/20 + CMF {dsg["cmf"]}/20)'
+        # PUNTO 7 — earnings dentro de la ventana de aviso (10-21 dias)
+        if v.get('earnings_accion') == 'avisar':
+            summary+=f' | EARNINGS EN {v["dias_earnings"]} DIAS ({v["earnings_date"]}) — AVISO OBLIGATORIO'
+        # Datos fundamentales si disponibles
+        fund = fundamentales.get(v['ticker'], {})
+        if fund:
+            f_parts = []
+            if fund.get('per_forward'): f_parts.append(f'PERfwd:{fund["per_forward"]}x')
+            if fund.get('ev_ebitda'):   f_parts.append(f'EV/EBITDA:{fund["ev_ebitda"]}x')
+            if fund.get('peg'):         f_parts.append(f'PEG:{fund["peg"]}')
+            if fund.get('eps_trailing') and fund.get('eps_fwd'):
+                f_parts.append(f'EPS:{fund["eps_trailing"]}->{fund["eps_fwd"]}')
+            if fund.get('eps_growth'):  f_parts.append(f'EPSgrowth:{fund["eps_growth"]}%')
+            if fund.get('margen_neto'): f_parts.append(f'Margen:{fund["margen_neto"]}%')
+            if fund.get('roe'):         f_parts.append(f'ROE:{fund["roe"]}%')
+            if fund.get('deuda_equity'):f_parts.append(f'D/E:{fund["deuda_equity"]}')
+            if fund.get('rev_growth'):  f_parts.append(f'RevGrowth:{fund["rev_growth"]}%')
+            # NUEVO (28/06) — consenso de analistas y precio objetivo, sin coste adicional
+            if fund.get('analista_consenso'):
+                consenso_txt = f'Consenso:{fund["analista_consenso"]}'
+                if fund.get('analista_n_opiniones'): consenso_txt += f'({fund["analista_n_opiniones"]} analistas)'
+                f_parts.append(consenso_txt)
+            if fund.get('analista_target_medio'):
+                target_txt = f'TargetMedio:${fund["analista_target_medio"]}'
+                if fund.get('analista_upside_pct') is not None:
+                    target_txt += f'({fund["analista_upside_pct"]:+}% vs precio actual)'
+                f_parts.append(target_txt)
+            # NUEVO (05/07, opcion B) — catalizador (revisiones, sorpresa: via yfinance) y
+            # calidad fundamental adicional (margenes via yfinance; ROIC/EPStrim via FMP opcional)
+            if fund.get('upgrades_90d') is not None:
+                f_parts.append(f'RevisionesAnalistas90d:{fund["upgrades_90d"]}subidas/{fund.get("downgrades_90d",0)}bajadas')
+            if fund.get('ultima_revision'):
+                f_parts.append(f'UltimaRevision:{fund["ultima_revision"]}')
+            if fund.get('sorpresa_eps_pct') is not None:
+                f_parts.append(f'SorpresaEPS:{fund["sorpresa_eps_pct"]:+}%({fund.get("sorpresa_fecha","?")})')
+            if fund.get('fmp_eps_q'):
+                f_parts.append(f'EPStrim:{"->".join(str(x) for x in fund["fmp_eps_q"])}')
+            if fund.get('margen_bruto') is not None:
+                f_parts.append(f'MargenBruto:{fund["margen_bruto"]}%')
+            if fund.get('margen_operativo') is not None:
+                f_parts.append(f'MargenOperativo:{fund["margen_operativo"]}%')
+            if fund.get('fmp_roic') is not None:
+                f_parts.append(f'ROIC:{fund["fmp_roic"]}%')
+            if fund.get('fcf_growth') is not None:
+                f_parts.append(f'FCFgrowth:{fund["fcf_growth"]}%')
+            if f_parts: summary+=f'        FUND: {" | ".join(f_parts)}\n'
+        # PUNTO 7 — noticias recientes (max 3, solo si existen)
+        if v.get('noticias'):
+            noticias_str = ' / '.join(f'"{n["titulo"]}" ({n["fuente"]}, {n["fecha"]})' for n in v['noticias'])
+            summary+=f'        NOTICIAS: {noticias_str}\n'
+        summary+='\n'
+    return summary
+
+
 def construir_prompt(data):
     """PUNTO 47 (06/08/2026) — construye el prompt del informe. Extraida de generate_analysis.
 
@@ -2926,155 +3090,7 @@ def construir_prompt(data):
             print(f'  Correlacion candidatos: sin pares >=0.70 ({cc["n_sesiones"]} sesiones)')
 
     summary+='\nSETUPS VALIDOS CON ANALISIS FUNDAMENTAL (usa EXACTAMENTE estos niveles, RIESGO y RANKING ya calculados — no los recalcules):\n'
-    for v in valid[:5]:
-        er=v['entry_range']
-        rsi_s = v.get("rsi"); adx_s = v.get("adx"); cmf_s = v.get("cmf"); sq_s = v.get("squeeze"); sct_s = v.get("sct")
-        indicadores = []
-        if rsi_s: indicadores.append(f"RSI:{rsi_s}")
-        if adx_s: indicadores.append(f"ADX:{adx_s}")
-        if cmf_s: indicadores.append(f"CMF:{cmf_s}")
-        if sct_s: indicadores.append(f"SCT:{sct_s}")
-        if sq_s: indicadores.append("SQUEEZE")
-        ind_str = " | ".join(indicadores) if indicadores else ""
-        # NUEVO (27/06) — el objetivo es una proyeccion, no un nivel de orden real como entrada/
-        # stop: mostrarlo con 2 decimales ($671.36) da una falsa sensacion de precision que el
-        # mercado no tiene. Se redondea solo para el TEXTO del informe (no afecta al calculo
-        # interno de R/B, que sigue usando el valor exacto). Entrada y stop SI son niveles de
-        # orden reales que Carlos necesita exactos para operar, no se tocan.
-        def _redondeo_display(precio):
-            if precio is None: return precio
-            return round(precio) if precio >= 20 else round(precio, 1)
-        target_disp = _redondeo_display(er.get("target"))
-        target_parcial_disp = _redondeo_display(er.get("target_parcial"))
-        summary+=f'- {v["ticker"]} ({v["group"]}): ${v.get("price","?")} | {er["tipo"]} | Entrada:${er["entry_lo"]}-${er["entry_hi"]} | Stop:${er["stop"]}'
-        # PUNTO 4 — objetivo escalonado: parcial y final
-        if target_parcial_disp is not None: summary+=f' | Obj.parcial:${target_parcial_disp}'
-        summary+=f' | Obj.final:${target_disp}'
-        if ind_str: summary+=f' | {ind_str}'
-        if er.get('rr'): summary+=f' | R/B:1:{er["rr"]}'
-        # PUNTO 33 (01/08/2026) — estimación de tiempo al objetivo en días hábiles
-        # Fórmula: distancia al objetivo / ATR. Se emite como rango (ATR mínimo y máximo
-        # del período disponible) para no dar falsa precisión. Si el ATR es muy bajo
-        # (universo en calma extrema) o la distancia es cero, se omite silenciosamente.
-        # ARREGLO (02/08/2026): la version original pedia er['objetivo'] y er['entrada'],
-        # claves que NO existen en entry_range (son 'target', 'entry_lo', 'entry_hi'). El
-        # bloque devolvia None siempre y la linea no se emitia nunca, en silencio porque
-        # el except de abajo se lo tragaba. Verificado contra data.json de produccion.
-        try:
-            precio_obj = er.get('target')
-            _elo, _ehi = er.get('entry_lo'), er.get('entry_hi')
-            precio_ent = ((_elo + _ehi) / 2) if (_elo and _ehi) else (_elo or _ehi)
-            atr_val = v.get('atr')
-            if precio_obj and precio_ent and atr_val and atr_val > 0:
-                distancia = abs(precio_obj - precio_ent)
-                # CORRECCION DE FORMULA (02/08/2026). La version anterior emitia
-                # distancia/ATR con un rango de +-40% y producia cifras irreales: DOCU
-                # daba "4-9 dias habiles" para un +37%. El error es conceptual, no de
-                # calibracion: el ATR es el rango medio diario ABSOLUTO (incluye el
-                # movimiento en contra), no la deriva neta. distancia/ATR solo seria
-                # correcto si el precio avanzara un ATR entero en la misma direccion
-                # cada sesion, sin un solo dia en contra.
-                #
-                # Los dos extremos teoricos acotan la respuesta:
-                #   n     = distancia/ATR      -> SUELO: avance en linea recta
-                #   n**2  = (distancia/ATR)**2 -> TECHO: paseo aleatorio puro, donde el
-                #                                 desplazamiento neto escala con ATR*sqrt(n)
-                # La realidad (tendencia con retrocesos) cae entre ambos, asi que se emite
-                # el intervalo completo y se etiqueta como ORDEN DE MAGNITUD. Es un rango
-                # ancho a proposito: fingir precision aqui es lo que hacia dano.
-                ratio = distancia / atr_val
-                dias_min = max(1, round(ratio))
-                dias_max = min(250, round(ratio ** 2))   # tope: ~1 año bursatil
-                if dias_max > dias_min:
-                    summary += (f' | Tiempo estimado al objetivo: {dias_min}-{dias_max} sesiones'
-                                f' (orden de magnitud, NO prediccion: {dias_min}=avance en linea'
-                                f' recta, {dias_max}=con retrocesos tipicos; ATR ${round(atr_val,2)}/dia)')
-        except Exception as _e33:
-            # Antes era un pass mudo: un bug de claves sobrevivio asi una jornada entera.
-            print(f'  AVISO P33: no se pudo estimar tiempo al objetivo de {v.get("ticker","?")}: {_e33}')
-        # PUNTO 18 — aviso explicito para que Claude no venda el pullback como retroceso sano
-        if er.get('rsi_sobrecompra'):
-            summary+=' | AVISO: PULLBACK CON RSI EN SOBRECOMPRA (>=70) — el retroceso apenas ha aliviado la sobrecompra'
-        # PUNTO 9 — RVOL informativo (el filtro ya elimino rupturas con RVOL<1.2, pero el valor
-        # exacto sigue siendo util para que Claude calibre la solidez del respaldo de volumen)
-        if v.get('rvol') is not None: summary+=f' | RVOL:{v["rvol"]}x'
-        # PUNTO 12+13 — si el techo del objetivo no es el maximo de 52s por defecto, indicar
-        # el motivo explicito (correccion fuerte posterior invalido el maximo bruto como techo realista)
-        tm = v.get('techo_metodo')
-        if tm and tm not in (None, 'max52', 'sin_datos'):
-            etiqueta_tm = {'fib0.764_post_correccion': 'objetivo acotado a un retroceso del 76.4% de la caida previa (no al maximo de 52s, invalidado por una correccion >20% posterior)',
-                           'fib0.618_post_correccion': 'objetivo acotado a un retroceso del 61.8% de la caida previa (no al maximo de 52s, invalidado por una correccion >20% posterior)',
-                           'fib0.764_post_correccion_sin_atr': 'objetivo acotado a un retroceso del 76.4% de la caida previa (maximo de 52s invalidado por correccion >20%; sin ATR disponible para alternativa)',
-                           'atr_proyectado_post_correccion': 'objetivo proyectado por rango medio (ATR), ya que ni el maximo de 52s ni los retrocesos de Fibonacci de la caida previa dejaban margen suficiente'}.get(tm)
-            if etiqueta_tm: summary+=f' | OBJETIVO: {etiqueta_tm}'
-        # PUNTO 11 — Volume Profile aproximado: POC como referencia de soporte/resistencia
-        # institucional, y aviso explicito cuando entry_lo coincide con VAL (confirma el pullback)
-        vprof = v.get('vol_profile')
-        if vprof:
-            summary+=f' | POC:${vprof["poc"]} VAH:${vprof["vah"]} VAL:${vprof["val"]}'
-            if vprof.get('confirma_pullback'):
-                summary+=' (entrada coincide con VAL — refuerza calidad del pullback)'
-            # NUEVO (05/07) — VAL coincide con la entrada pero esta demasiado cerca del stop
-            # (dentro de la mitad inferior del rango entrada->stop): NO es soporte util. Se
-            # marca explicitamente para que Claude no lo cite como argumento de calidad.
-            elif vprof.get('coincide_val') and not vprof.get('val_valido_como_soporte'):
-                summary+=' (VAL dentro del rango de riesgo, demasiado cerca del stop — NO citarlo como soporte)'
-        summary+=f' | RIESGO:{v.get("riesgo","?")} (motivo exacto: {v.get("riesgo_motivo","?")}) | RANKING:{v.get("ranking","?")}'
-        # PUNTO 19 — desglose auditable del ranking
-        dsg = v.get('ranking_desglose')
-        if dsg:
-            summary+=f' (desglose: SCT {dsg["sct"]}/40 + R/B {dsg["rb"]}/20 + sector {dsg["sector"]}/20 + CMF {dsg["cmf"]}/20)'
-        # PUNTO 7 — earnings dentro de la ventana de aviso (10-21 dias)
-        if v.get('earnings_accion') == 'avisar':
-            summary+=f' | EARNINGS EN {v["dias_earnings"]} DIAS ({v["earnings_date"]}) — AVISO OBLIGATORIO'
-        # Datos fundamentales si disponibles
-        fund = fundamentales.get(v['ticker'], {})
-        if fund:
-            f_parts = []
-            if fund.get('per_forward'): f_parts.append(f'PERfwd:{fund["per_forward"]}x')
-            if fund.get('ev_ebitda'):   f_parts.append(f'EV/EBITDA:{fund["ev_ebitda"]}x')
-            if fund.get('peg'):         f_parts.append(f'PEG:{fund["peg"]}')
-            if fund.get('eps_trailing') and fund.get('eps_fwd'):
-                f_parts.append(f'EPS:{fund["eps_trailing"]}->{fund["eps_fwd"]}')
-            if fund.get('eps_growth'):  f_parts.append(f'EPSgrowth:{fund["eps_growth"]}%')
-            if fund.get('margen_neto'): f_parts.append(f'Margen:{fund["margen_neto"]}%')
-            if fund.get('roe'):         f_parts.append(f'ROE:{fund["roe"]}%')
-            if fund.get('deuda_equity'):f_parts.append(f'D/E:{fund["deuda_equity"]}')
-            if fund.get('rev_growth'):  f_parts.append(f'RevGrowth:{fund["rev_growth"]}%')
-            # NUEVO (28/06) — consenso de analistas y precio objetivo, sin coste adicional
-            if fund.get('analista_consenso'):
-                consenso_txt = f'Consenso:{fund["analista_consenso"]}'
-                if fund.get('analista_n_opiniones'): consenso_txt += f'({fund["analista_n_opiniones"]} analistas)'
-                f_parts.append(consenso_txt)
-            if fund.get('analista_target_medio'):
-                target_txt = f'TargetMedio:${fund["analista_target_medio"]}'
-                if fund.get('analista_upside_pct') is not None:
-                    target_txt += f'({fund["analista_upside_pct"]:+}% vs precio actual)'
-                f_parts.append(target_txt)
-            # NUEVO (05/07, opcion B) — catalizador (revisiones, sorpresa: via yfinance) y
-            # calidad fundamental adicional (margenes via yfinance; ROIC/EPStrim via FMP opcional)
-            if fund.get('upgrades_90d') is not None:
-                f_parts.append(f'RevisionesAnalistas90d:{fund["upgrades_90d"]}subidas/{fund.get("downgrades_90d",0)}bajadas')
-            if fund.get('ultima_revision'):
-                f_parts.append(f'UltimaRevision:{fund["ultima_revision"]}')
-            if fund.get('sorpresa_eps_pct') is not None:
-                f_parts.append(f'SorpresaEPS:{fund["sorpresa_eps_pct"]:+}%({fund.get("sorpresa_fecha","?")})')
-            if fund.get('fmp_eps_q'):
-                f_parts.append(f'EPStrim:{"->".join(str(x) for x in fund["fmp_eps_q"])}')
-            if fund.get('margen_bruto') is not None:
-                f_parts.append(f'MargenBruto:{fund["margen_bruto"]}%')
-            if fund.get('margen_operativo') is not None:
-                f_parts.append(f'MargenOperativo:{fund["margen_operativo"]}%')
-            if fund.get('fmp_roic') is not None:
-                f_parts.append(f'ROIC:{fund["fmp_roic"]}%')
-            if fund.get('fcf_growth') is not None:
-                f_parts.append(f'FCFgrowth:{fund["fcf_growth"]}%')
-            if f_parts: summary+=f'        FUND: {" | ".join(f_parts)}\n'
-        # PUNTO 7 — noticias recientes (max 3, solo si existen)
-        if v.get('noticias'):
-            noticias_str = ' / '.join(f'"{n["titulo"]}" ({n["fuente"]}, {n["fecha"]})' for n in v['noticias'])
-            summary+=f'        NOTICIAS: {noticias_str}\n'
-        summary+='\n'
+    summary += bloque_setups(valid, fundamentales)
     if descartados_por_earnings:
         summary+='\nDESCARTADOS POR EARNINGS INMINENTE (no incluir en ENTRADAS, se puede mencionar brevemente si aporta contexto):\n'
         for v in descartados_por_earnings:
