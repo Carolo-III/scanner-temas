@@ -2659,7 +2659,15 @@ def bloque_amplitud(data):
             _mcc = (f'el McClellan lleva {_tend["sesiones_mcclellan"]} sesiones en tendencia '
                     f'{_tend["mcclellan"]}'
                     if _tend.get('sesiones_mcclellan')
-                    else 'el McClellan no muestra una tendencia definida en las ultimas sesiones')
+                    # PUNTO 53 (08/08/2026) — sin la coletilla final, el modelo convertia
+                    # "no muestra tendencia definida" en "amplitud sostenida y estable"
+                    # (visto el 05, el 06 y el 07/08): afirmaba estabilidad donde el dato
+                    # solo dice indeterminacion. Son cosas distintas y la diferencia importa:
+                    # una racha rota no es lo mismo que una situacion asentada.
+                    else ('el McClellan no muestra una tendencia definida en las ultimas '
+                          'sesiones. OJO: esto significa INDETERMINACION —la racha se ha roto '
+                          'o alterna—, NO que la amplitud sea estable o sostenida. No lo '
+                          'describas como equilibrio ni como normalidad asentada'))
             breadth_txt += (
                 f'- DIRECCION DE LA DISPERSION: {_lectura}{_racha}. Usa esta lectura TAL CUAL; no la '
                 f'reinterpretes ni deduzcas tu la relacion entre el ratio y la dispersion.\n'
