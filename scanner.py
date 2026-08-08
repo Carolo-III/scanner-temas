@@ -1956,28 +1956,34 @@ def get_putcall_cboe():
     Degrada en silencio-con-traza: si la pagina cambia, no responde o no trae la tabla,
     se devuelve {} y el scanner sigue. Nunca aborta por esto.
     """
+    # Se parsea con BeautifulSoup y NO con pandas.read_html: read_html exige lxml (o
+    # bs4 + html5lib), y el workflow solo instala beautifulsoup4. Usar lo que ya hay
+    # evita añadir una dependencia para una sola funcion — y una dependencia que falte
+    # aqui no romperia nada visible, solo dejaria de recogerse el dato en silencio.
     try:
+        from bs4 import BeautifulSoup
         r = requests.get(URL_PUTCALL_CBOE, timeout=30,
                          headers={'User-Agent': 'Mozilla/5.0 (scanner-temas)'})
         if r.status_code != 200:
             _traza('putcall/http', RuntimeError(f'status {r.status_code}'))
             return {}
-        tablas = pd.read_html(io.StringIO(r.text))
+        sopa = BeautifulSoup(r.text, 'html.parser')
     except Exception as _e:
         _traza('putcall/descarga', _e)
         return {}
-    # Buscar por contenido: la tabla de ratios es la que contiene la etiqueta de equity.
+    # Se busca por CONTENIDO de celda, recorriendo todas las filas de la pagina: la
+    # posicion de la tabla puede cambiar, el texto "PUT/CALL RATIO" no.
     etiquetas = {}
-    for t in tablas:
-        if t.shape[1] < 2:
+    for fila in sopa.find_all('tr'):
+        celdas = [c.get_text(strip=True) for c in fila.find_all(['td', 'th'])]
+        if len(celdas) < 2:
             continue
-        for _, fila in t.iterrows():
-            clave = str(fila.iloc[0]).strip().upper()
-            if 'PUT/CALL RATIO' in clave:
-                try:
-                    etiquetas[clave] = float(fila.iloc[1])
-                except (TypeError, ValueError):
-                    continue
+        clave = celdas[0].upper()
+        if 'PUT/CALL RATIO' in clave:
+            try:
+                etiquetas[clave] = float(celdas[1])
+            except (TypeError, ValueError):
+                continue
     if not etiquetas:
         _traza('putcall/tabla-no-encontrada', RuntimeError('sin filas PUT/CALL RATIO'))
         return {}
