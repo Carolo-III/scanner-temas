@@ -2455,6 +2455,40 @@ def calc_groups(res, is_sp=False):
     return sorted(out,key=lambda x:x['score'],reverse=True)
 
 
+def rescatar_analisis_anterior(analisis, avisos):
+    """PUNTO 55 (08/08/2026) — conserva el ultimo informe bueno si el de hoy viene vacio.
+
+    Caso real del 08/08: se agoto el saldo de la API de Anthropic, generate_analysis
+    devolvio cadena vacia y el scanner subio data.json igualmente, SOBRESCRIBIENDO el
+    informe correcto de una hora antes. La web se quedo sin analisis, y el resto de los
+    datos —amplitud, setups, checkpoints— si eran validos y convenia actualizarlos.
+
+    Un informe de hace unas horas es infinitamente mejor que ninguno: se rescata el
+    anterior de data.json y se marca claramente como no actual, para que nadie lo lea
+    creyendo que corresponde a la sesion de hoy.
+
+    Solo actua cuando el informe viene VACIO o es demasiado corto. Un informe generado
+    pero incompleto (truncado, o al que le falta una seccion) NO se sustituye: es peor
+    perder el analisis de hoy que tenerlo a medias.
+    """
+    if analisis and len(analisis.strip()) >= 500:
+        return analisis, False
+    previo, _ = get_github_file('data.json')
+    if previo == '__ERROR__' or not isinstance(previo, dict):
+        print('  🔴 informe vacio y no se pudo leer el anterior de GitHub — se sube vacio')
+        return analisis, False
+    anterior = (previo.get('analisis') or '').strip()
+    if len(anterior) < 500:
+        print('  🔴 informe vacio y el anterior tampoco servia — se sube vacio')
+        return analisis, False
+    sello = previo.get('timestamp', 'ejecucion anterior')
+    print(f'  ⚠️  Informe vacio: se CONSERVA el analisis anterior ({sello}) en vez de borrarlo')
+    aviso = (f'> **AVISO DEL SISTEMA — informe no actualizado.** La generacion del analisis '
+             f'fallo en esta ejecucion, asi que lo que sigue es el informe de {sello}. '
+             f'Los datos, setups y seguimiento de la web SI estan actualizados; solo este '
+             f'texto es anterior.\n\n')
+    return aviso + anterior, True
+
 def validar_informe(analisis, universo_tickers):
     """PUNTO 36 (01/08/2026) — Validación post-generación del informe.
 
@@ -2722,6 +2756,16 @@ def bloque_seguimiento(data):
     if resoluciones:
         recientes = [r for r in resoluciones if r.get('reciente', True)]
         antiguas = [r for r in resoluciones if not r.get('reciente', True)]
+        # PUNTO 54 (08/08/2026) — TOPE por numero, ademas del de recencia del P43. La
+        # ventana de 5 dias no bastaba: el 08/08 seguian entrando ~21 resoluciones y el
+        # informe se corto por max_tokens perdiendo la seccion RIESGOS DEL ESCENARIO
+        # entera (lo cazo el P36). Se detallan las de MAYOR MAGNITUD —los peores stops y
+        # los mejores objetivos, que es lo accionable— y el resto pasa al resumen. Un
+        # stop del -4% no cambia ninguna decision; uno del -32% si.
+        if len(recientes) > MAX_RESOLUCIONES_DETALLADAS:
+            recientes = sorted(recientes, key=lambda r: abs(r.get('ret_pct') or 0), reverse=True)
+            recientes, resto = recientes[:MAX_RESOLUCIONES_DETALLADAS], recientes[MAX_RESOLUCIONES_DETALLADAS:]
+            antiguas = antiguas + resto
         summary += ('\nSEGUIMIENTO — SETUPS RESUELTOS (el precio ya ha tocado stop u objetivo; '
                     'son hechos consumados, NO vigilancia ni recomendacion de entrada):\n')
         for r in recientes:
@@ -2733,9 +2777,9 @@ def bloque_seguimiento(data):
         if antiguas:
             _st = [r for r in antiguas if r['resultado'] == 'stop']
             _tg = [r for r in antiguas if r['resultado'] == 'target']
-            summary += (f'ANTERIORES (ya reportadas en informes previos, NO las detalles una por una): '
-                        f'{len(_st)} stops y {len(_tg)} objetivos de setups mas antiguos siguen dentro de '
-                        f'la ventana de seguimiento. Resumelas en UNA sola frase.\n')
+            summary += (f'RESTO (ya reportadas antes o de menor magnitud, NO las detalles una por una): '
+                        f'{len(_st)} stops y {len(_tg)} objetivos siguen dentro de la ventana de '
+                        f'seguimiento. Resumelas en UNA sola frase.\n')
         summary += ('Menciona SIEMPRE estas resoluciones en la seccion de seguimiento, con una linea por '
                     'valor, ANTES de las alertas de posiciones abiertas. Un stop alcanzado es la '
                     'informacion mas accionable del informe. Si un mismo ticker aparece aqui y tambien '
@@ -2947,6 +2991,8 @@ def bloque_setups(valid, fundamentales):
         summary+='\n'
     return summary
 
+
+MAX_RESOLUCIONES_DETALLADAS = 10   # P54: tope de resoluciones que se detallan en el prompt
 
 def construir_prompt(data):
     """PUNTO 47 (06/08/2026) — construye el prompt del informe. Extraida de generate_analysis.
@@ -3961,6 +4007,8 @@ def main():
     if _avisos:
         for av in _avisos:
             print(f'  AVISO informe: {av}')
+    # PUNTO 55 — si el informe vino vacio, conservar el anterior en vez de pisarlo.
+    analisis, _rescatado = rescatar_analisis_anterior(analisis, _avisos)
     history=update_history(all_groups, all_values=sorted(ar,key=lambda x:x['score'] or 0,reverse=True))
 
     print('\n▸ Generando alertas Telegram...')
