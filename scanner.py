@@ -3948,6 +3948,14 @@ def main():
 
     pt=list(set(t for grp in PERSONAL_WATCHLIST.values() for t in grp))
 
+    # PUNTO 56 — put/call de Cboe, junto al resto del bloque macro. Se descarga y se
+    # imprime AQUI a proposito: la primera version asignaba la variable despues del bloque
+    # de setups pero la usaba antes, un NameError que no salto en Colab porque el espejo de
+    # la celda del pipeline no llevaba ese print. Dato y log en el mismo sitio.
+    putcall = get_putcall_cboe()
+    if putcall:
+        print('  Put/call (Cboe): ' + ' | '.join(f'{k}={v}' for k, v in sorted(putcall.items())))
+
     print(f'\n▸ Watchlist ({len(pt)} valores)...')
     cp,vp,hp,lp=download_prices(pt+['SPY'],period='1y')
     if not cp.empty:
@@ -4053,9 +4061,6 @@ def main():
               f'(Target: {n_ok} | Stop: {n_stop} | Abierto: {n_ab})')
         # PUNTO 10 + NUEVO (27/06, RECALIBRADO 06/07 y 10/07) — alertas con jerarquia y
         # deduplicadas por ticker para presentacion (data.json conserva todas)
-        if putcall:
-            _pc = ' | '.join(f'{k}={v}' for k, v in sorted(putcall.items()))
-            print(f'  Put/call (Cboe): {_pc}')
         # PUNTO 40 — resoluciones primero: un stop alcanzado es mas urgente que cualquier alerta.
         _resoluciones = resoluciones_por_ticker(evaluaciones)
         if _resoluciones:
@@ -4096,7 +4101,6 @@ def main():
     macro = macro if 'macro' in dir() else {}
     # P43 — anotar resoluciones con su fecha de PRIMERA deteccion, antes del analisis,
     # para que el prompt pueda detallar solo las recientes y resumir las antiguas.
-    putcall = get_putcall_cboe()   # P56 — instrumentacion de sentimiento en opciones
     resoluciones_anotadas = anotar_resoluciones(evaluaciones, macro, ts)
     data_tmp={'timestamp':ts,'mode':'S&P500 + Watchlist','groups':all_groups,'values':sorted(ar,key=lambda x:x['score'] or 0,reverse=True),'spy_healthy':spy_ok,'macro':macro,'fundamentales':fundamentales,'breadth':breadth,'evaluaciones':evaluaciones,'resoluciones':resoluciones_anotadas}
     analisis='Analisis no disponible. Ejecuta Colab para generar el analisis con Claude.'
