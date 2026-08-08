@@ -8,6 +8,7 @@ import math, warnings, json, base64, os, time
 from datetime import datetime
 from pathlib import Path
 import numpy as np
+import io
 import pandas as pd
 import requests
 import yfinance as yf
@@ -1916,6 +1917,112 @@ def actualizar_breadth_history(breadth, macro, ts):
     if not isinstance(bh, list):
         bh = []
     return merge_breadth_entry(bh, construir_entrada_breadth(breadth, macro, ts))
+
+# ============================================================
+# PUT/CALL DE CBOE — INSTRUMENTACION (PUNTO 56, 08/08/2026)
+# Unico componente del sentimiento que el scanner no podia ver: mide posicionamiento en
+# OPCIONES, no precio ni volumen de acciones. El resto del indice Fear&Greed de CNN ya
+# esta cubierto (momentum, amplitud, maximos/minimos, VIX, HYG/IEF), asi que se instrumenta
+# solo esta pieza en vez del compuesto, que seria empaquetar en un digito lo que ya se mide
+# con mas resolucion.
+#
+# Fuente: pagina de estadisticas diarias de Cboe, publica y sin clave. NO admite fecha: sirve
+# siempre la ultima sesion disponible. En la nocturna (00:00 Madrid = 18:00 ET) el dato ya es
+# de cierre; una ejecucion intradia cogeria datos parciales, asi que solo persiste el cierre,
+# mismo criterio que el P39.
+#
+# Se parsea con pandas.read_html en vez de expresiones regulares: la pagina puede recolocar
+# las tablas sin avisar, y buscar por CONTENIDO de la celda aguanta eso mucho mejor que
+# depender del orden o del maquetado.
+#
+# Es INSTRUMENTACION: no alerta, no toca el score y de momento no va al prompt. Igual que la
+# curva de tipos, primero se acumula serie propia y despues se decide si acoplarla.
+# ============================================================
+
+URL_PUTCALL_CBOE = 'https://www.cboe.com/markets/us/options/market-statistics/daily/'
+
+RATIOS_PUTCALL = {
+    'equity': 'EQUITY PUT/CALL RATIO',        # el termometro clasico de sentimiento minorista
+    'total': 'TOTAL PUT/CALL RATIO',
+    'index': 'INDEX PUT/CALL RATIO',          # contaminado por coberturas institucionales
+    'etp': 'EXCHANGE TRADED PRODUCTS PUT/CALL RATIO',
+    'vix': 'CBOE VOLATILITY INDEX (VIX) PUT/CALL RATIO',
+    'spx': 'SPX + SPXW PUT/CALL RATIO',
+}
+
+def get_putcall_cboe():
+    """Descarga los ratios put/call de la pagina diaria de Cboe. Devuelve dict o {}.
+
+    Degrada en silencio-con-traza: si la pagina cambia, no responde o no trae la tabla,
+    se devuelve {} y el scanner sigue. Nunca aborta por esto.
+    """
+    try:
+        r = requests.get(URL_PUTCALL_CBOE, timeout=30,
+                         headers={'User-Agent': 'Mozilla/5.0 (scanner-temas)'})
+        if r.status_code != 200:
+            _traza('putcall/http', RuntimeError(f'status {r.status_code}'))
+            return {}
+        tablas = pd.read_html(io.StringIO(r.text))
+    except Exception as _e:
+        _traza('putcall/descarga', _e)
+        return {}
+    # Buscar por contenido: la tabla de ratios es la que contiene la etiqueta de equity.
+    etiquetas = {}
+    for t in tablas:
+        if t.shape[1] < 2:
+            continue
+        for _, fila in t.iterrows():
+            clave = str(fila.iloc[0]).strip().upper()
+            if 'PUT/CALL RATIO' in clave:
+                try:
+                    etiquetas[clave] = float(fila.iloc[1])
+                except (TypeError, ValueError):
+                    continue
+    if not etiquetas:
+        _traza('putcall/tabla-no-encontrada', RuntimeError('sin filas PUT/CALL RATIO'))
+        return {}
+    salida = {}
+    for nombre, etiqueta in RATIOS_PUTCALL.items():
+        if etiqueta in etiquetas:
+            salida[nombre] = etiquetas[etiqueta]
+    return salida
+
+def construir_entrada_putcall(putcall, macro, ts):
+    """Una linea de la serie: fecha de SESION del panel + los ratios del dia."""
+    if not putcall:
+        return None
+    base = construir_entrada_breadth({}, macro, ts)
+    return {'fecha': base.get('fecha'), 'es_cierre': base.get('es_cierre'), **putcall}
+
+def merge_putcall(ph, entrada, max_entradas=2000):
+    """Misma regla de precedencia que el P29: un cierre no lo pisa una provisional."""
+    fecha = entrada.get('fecha')
+    existente = next((e for e in (ph or []) if e.get('fecha') == fecha), None)
+    if existente and not entrada.get('es_cierre') and existente.get('es_cierre'):
+        return sorted(ph, key=lambda e: e.get('fecha') or '')[-max_entradas:]
+    ph = [e for e in (ph or []) if e.get('fecha') != fecha]
+    ph.append(entrada)
+    return sorted(ph, key=lambda e: e.get('fecha') or '')[-max_entradas:]
+
+def actualizar_putcall_history(putcall, macro, ts):
+    """Persiste la serie. Solo en ejecucion de cierre: intradia el dato es parcial."""
+    if not putcall:
+        return None
+    entrada = construir_entrada_putcall(putcall, macro, ts)
+    if entrada is None:
+        return None
+    if not entrada.get('es_cierre'):
+        print('  Put/call OMITIDO: sesion en curso (el dato de Cboe seria parcial).')
+        return None
+    ph, _ = get_github_file('putcall_history.json')
+    if ph == '__ERROR__':
+        print('  🔴 putcall_history OMITIDO (fallo de lectura de GitHub) — fichero intacto')
+        return None
+    if not isinstance(ph, list):
+        ph = []
+    fusionado = merge_putcall(ph, entrada)
+    print(f'  Put/call persistido: {len(fusionado)} entradas acumuladas')
+    return fusionado
 
 # ============================================================
 # RESOLUCIONES — HISTORICO PERMANENTE Y FECHA DE DETECCION (PUNTO 43, 05/08/2026)
@@ -3940,6 +4047,9 @@ def main():
               f'(Target: {n_ok} | Stop: {n_stop} | Abierto: {n_ab})')
         # PUNTO 10 + NUEVO (27/06, RECALIBRADO 06/07 y 10/07) — alertas con jerarquia y
         # deduplicadas por ticker para presentacion (data.json conserva todas)
+        if putcall:
+            _pc = ' | '.join(f'{k}={v}' for k, v in sorted(putcall.items()))
+            print(f'  Put/call (Cboe): {_pc}')
         # PUNTO 40 — resoluciones primero: un stop alcanzado es mas urgente que cualquier alerta.
         _resoluciones = resoluciones_por_ticker(evaluaciones)
         if _resoluciones:
@@ -3980,6 +4090,7 @@ def main():
     macro = macro if 'macro' in dir() else {}
     # P43 — anotar resoluciones con su fecha de PRIMERA deteccion, antes del analisis,
     # para que el prompt pueda detallar solo las recientes y resumir las antiguas.
+    putcall = get_putcall_cboe()   # P56 — instrumentacion de sentimiento en opciones
     resoluciones_anotadas = anotar_resoluciones(evaluaciones, macro, ts)
     data_tmp={'timestamp':ts,'mode':'S&P500 + Watchlist','groups':all_groups,'values':sorted(ar,key=lambda x:x['score'] or 0,reverse=True),'spy_healthy':spy_ok,'macro':macro,'fundamentales':fundamentales,'breadth':breadth,'evaluaciones':evaluaciones,'resoluciones':resoluciones_anotadas}
     analisis='Analisis no disponible. Ejecuta Colab para generar el analisis con Claude.'
@@ -4039,6 +4150,10 @@ def main():
     resoluciones_history = actualizar_resoluciones_history(evaluaciones, macro, ts)
     if resoluciones_history is not None:
         ficheros_subida['resoluciones_history.json'] = json.dumps(clean_nan(resoluciones_history), ensure_ascii=False)
+    # PUNTO 56 — serie diaria de put/call, en el mismo commit unico.
+    putcall_history = actualizar_putcall_history(putcall, macro, ts)
+    if putcall_history is not None:
+        ficheros_subida['putcall_history.json'] = json.dumps(clean_nan(putcall_history), ensure_ascii=False)
     upload_files_to_github(ficheros_subida)
     print('\n═══════════════════════════════════════')
     print('  TOP 5 TEMAS')
