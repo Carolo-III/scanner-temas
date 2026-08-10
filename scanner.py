@@ -126,13 +126,26 @@ def spy_health(bench_close, confirm_days=3):
         CONSECUTIVOS por encima de la MM200. Un rebote de un solo dia no reactiva el
         sistema (podria ser un pullback dentro de una tendencia bajista).
 
+    P57 (09/08/2026) — Score continuo 0.0-1.0:
+      Ademas del booleano (compatible con todo el codigo existente), la funcion devuelve
+      un float spy_score = clip(0.5 + distancia * 10, 0.0, 1.0), donde distancia es
+      (spy_close - mm200) / mm200. Con k=10:
+        - +5% sobre MM200 -> score 1.0 (techo)
+        - Exactamente en MM200 -> score 0.5
+        - -5% bajo MM200 -> score 0.0 (suelo)
+        - ±1% -> score 0.60 / 0.40 (zona de transicion suave)
+      El score se persiste en spy_health_history.json (fichero separado, opcion A) para
+      no alterar la comparabilidad del historico de scores ya acumulado.
+
     Nota: independiente del Punto 16 (acoplamiento regimen macro -> composite_score,
     bloqueado hasta finales de septiembre 2026). El position sizing segun regimen es
     decision de Carlos caso a caso, no del codigo.
+
+    Retorna: tupla (healthy: bool, spy_score: float)
     """
     try:
         p = bench_close.dropna()
-        if len(p) < 200: return True
+        if len(p) < 200: return True, 1.0
         ma200_series = p.rolling(200).mean()
         current = float(p.iloc[-1]); ma200 = float(ma200_series.iloc[-1])
         # Serie booleana de cierres sobre MM200 (solo donde la MM200 ya es valida)
@@ -157,11 +170,14 @@ def spy_health(bench_close, confirm_days=3):
             estado = f'BAJISTA (pendiente de confirmacion: {min(racha, confirm_days)}/{confirm_days} cierres sobre MM200)'
         else:
             estado = 'BAJISTA'
-        print(f'  SPY: ${round(current,2)} | MM200: ${round(ma200,2)} | {estado}')
-        return healthy
+        # Score continuo 0.0-1.0 (P57)
+        distancia = (current - ma200) / ma200
+        spy_score = round(min(1.0, max(0.0, 0.5 + distancia * 10)), 4)
+        print(f'  SPY: ${round(current,2)} | MM200: ${round(ma200,2)} | {estado} | spy_score: {spy_score}')
+        return healthy, spy_score
     except Exception as _e:
         _traza('spy_health', _e)
-        return True
+        return True, 1.0
 
 def calc_market_breadth(universe_close, bench_close):
     """
@@ -1573,14 +1589,26 @@ def calc_entry_range(ps, bi, mah, atr_val=None):
         _traza('calc_entry_range', _e)
         return {}
 
-def composite_score(r4, r13, vz, bo, ma, spy_healthy=True):
+def composite_score(r4, r13, vz, bo, ma, spy_healthy=True, spy_score=None):
+    """
+    P57 (09/08/2026): penalizacion proporcional via spy_score (float 0.0-1.0).
+      factor = 0.70 + 0.30 * spy_score
+        spy_score=1.0 -> factor 1.00 (sin penalizacion)
+        spy_score=0.5 -> factor 0.85 (penalizacion del 15%, zona de transicion)
+        spy_score=0.0 -> factor 0.70 (penalizacion maxima del 30%)
+    Si spy_score es None, se mantiene el comportamiento binario original.
+    """
     s=0
     if r4 is not None: s+=30*min(1,max(0,(r4+30)/60))
     if r13 is not None: s+=20*min(1,max(0,(r13+50)/100))
     if vz is not None: s+=25*min(1,max(0,(vz+1)/4))
     if bo: s+=15
     if ma: s+=10*(sum([ma.get('ma20',False),ma.get('ma50',False),ma.get('ma200',False)])/3)
-    if not spy_healthy: s=round(s*0.70,1)
+    if spy_score is not None:
+        factor = 0.70 + 0.30 * spy_score
+        s = round(s * factor, 1)
+    elif not spy_healthy:
+        s = round(s * 0.70, 1)
     return round(s,1)
 
 
@@ -2010,6 +2038,48 @@ def merge_putcall(ph, entrada, max_entradas=2000):
     ph.append(entrada)
     return sorted(ph, key=lambda e: e.get('fecha') or '')[-max_entradas:]
 
+# ============================================================
+# P57 (09/08/2026) — SPY HEALTH SCORE CONTINUO
+# Persiste la serie diaria del score continuo 0.0-1.0 en spy_health_history.json
+# (fichero separado — opcion A — para no alterar la comparabilidad del historico
+# de scores ya acumulado). El booleano spy_ok sigue siendo la variable de control
+# del sistema; el score es instrumentacion, igual que el put/call.
+# No alerta, no toca el prompt, no va al ranking hasta tener serie acumulada.
+# ============================================================
+
+MAX_SPY_HEALTH_ENTRIES = 500  # ~2 años de sesiones
+
+def actualizar_spy_health_history(spy_score, spy_ok, spy_close, ma200, ts):
+    """Persiste una entrada diaria en spy_health_history.json."""
+    if spy_score is None:
+        return None
+    try:
+        from datetime import datetime as _dt
+        fecha = _dt.strptime(ts, '%d/%m/%Y %H:%M').strftime('%Y-%m-%d')
+    except Exception:
+        fecha = ts[:10]
+    entrada = {
+        'fecha': fecha,
+        'spy_score': spy_score,
+        'spy_ok': bool(spy_ok),
+        'spy_close': round(spy_close, 2) if spy_close is not None else None,
+        'ma200': round(ma200, 2) if ma200 is not None else None,
+    }
+    sh, _ = get_github_file('spy_health_history.json')
+    if sh == '__ERROR__':
+        print('  🔴 spy_health_history OMITIDO (fallo de lectura de GitHub) — fichero intacto')
+        return None
+    if not isinstance(sh, list):
+        sh = []
+    fechas_existentes = {e.get('fecha') for e in sh}
+    if fecha in fechas_existentes:
+        print(f'  spy_health_history: fecha {fecha} ya registrada — omitido duplicado')
+        return sh
+    sh.append(entrada)
+    sh = sorted(sh, key=lambda e: e.get('fecha') or '')[-MAX_SPY_HEALTH_ENTRIES:]
+    print(f'  spy_health_history persistido: {len(sh)} entradas acumuladas | score hoy: {spy_score}')
+    return sh
+
 def actualizar_putcall_history(putcall, macro, ts):
     """Persiste la serie. Solo en ejecucion de cierre: intradia el dato es parcial."""
     if not putcall:
@@ -2301,13 +2371,17 @@ _CLOSES_CACHE = {}
 # del dia en que nacio sin cambiar firmas de funciones.
 _BREADTH_CACHE = {}
 
-def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesiones=30):
+def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesiones=30, min_sesiones_beta=60):
     """Correlacion de retornos diarios entre los candidatos finales + beta vs benchmark.
 
     - ventana: sesiones usadas (60 ~ 3 meses; mismo horizonte que el Volume Profile).
     - umbral_aviso: pares con correlacion >= umbral se marcan como concentracion.
-    - min_sesiones: minimo de retornos comunes para que la estadistica sea fiable;
+    - min_sesiones: minimo de retornos comunes para que la CORRELACION sea fiable;
       por debajo se devuelve None (mejor sin bloque que con una correlacion de juguete).
+    - min_sesiones_beta: minimo de retornos comunes para que la BETA sea fiable.
+      P58 (09/08/2026): separado de min_sesiones porque la beta es implausible con series
+      cortas (con 30 sesiones la covarianza es inestable; umbral minimo recomendado: 60
+      sesiones ~ 3 meses). Con menos de min_sesiones_beta la beta se omite (None).
     Devuelve dict con matriz, betas, pares altos y n de sesiones, o None si no aplica.
     """
     series = {tk: _CLOSES_CACHE[tk] for tk in tickers if tk in _CLOSES_CACHE}
@@ -2324,9 +2398,11 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
         bench_ret = bench.pct_change().reindex(rets.index).dropna()
         for tk in rets.columns:
             par = pd.concat([rets[tk], bench_ret], axis=1).dropna()
-            if len(par) >= min_sesiones:
+            if len(par) >= min_sesiones_beta:  # P58: umbral propio para beta
                 cov = np.cov(par.iloc[:, 0], par.iloc[:, 1])
                 betas[tk] = round(float(cov[0, 1] / cov[1, 1]), 2) if cov[1, 1] > 0 else None
+            else:
+                betas[tk] = None  # serie insuficiente — mejor None que valor espurio
     pares_altos = []
     tks = list(corr.columns)
     for i in range(len(tks)):
@@ -2348,7 +2424,11 @@ def formato_correlacion_summary(cc, valid):
         for j in range(i + 1, len(tks)):
             s += f'- {tks[i]} vs {tks[j]}: {cc["corr"].iloc[i, j]}\n'
     if cc['betas']:
-        s += 'Beta vs SPY: ' + ' | '.join(f'{tk}:{b}' for tk, b in cc['betas'].items() if b is not None) + '\n'
+        betas_validas = {tk: b for tk, b in cc['betas'].items() if b is not None}
+        if betas_validas:
+            s += 'Beta vs SPY: ' + ' | '.join(f'{tk}:{b}' for tk, b in betas_validas.items()) + '\n'
+        elif cc['betas']:
+            s += 'Beta vs SPY: no disponible (serie < 60 sesiones)\n'
     if cc['pares_altos']:
         pares_txt = ', '.join(f'{a}-{b} ({c})' for a, b, c in cc['pares_altos'])
         s += f'AVISO CONCENTRACION: pares con correlacion >=0.70: {pares_txt}\n'
@@ -2435,7 +2515,7 @@ def check_data_health(close_df, high_df, low_df, vol_df, max_var_diaria=0.50, mi
               f'{", ".join(sorted(sospechosos)[:10])}{"..." if len(sospechosos)>10 else ""}')
     return sospechosos
 
-def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, spy_healthy=True):
+def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, spy_healthy=True, spy_score=None):
     check_frescura_panel(close_df)  # PUNTO 22 — aviso en log si el panel llega rancio o incompleto
     _sospechosos = check_data_health(close_df, high_df, low_df, vol_df)  # PUNTO 35 — coherencia OHLCV
     _CLOSES_CACHE['__BENCH__'] = bench  # PUNTO 17 — benchmark para betas
@@ -2506,7 +2586,7 @@ def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, s
                 volp['coincide_val'] = coincide
                 volp['val_valido_como_soporte'] = val_sobre_stop
                 volp['confirma_pullback'] = coincide and val_sobre_stop
-            sc=composite_score(r4,r13,vz,bi['breakout'],mah,spy_healthy)
+            sc=composite_score(r4,r13,vz,bi['breakout'],mah,spy_healthy,spy_score=spy_score)
             # Score de Confirmacion Tecnica (SCT)
             atr_val = atr_pre  # ya calculado antes
             rsi_val = calc_rsi(p)
@@ -3925,7 +4005,8 @@ def main():
     cache = {}
 
     print('▸ SPY...')
-    bc,bv,bh,bl=download_prices(['SPY'],period='1y'); bs=bc['SPY']; spy_ok=spy_health(bs)
+    bc,bv,bh,bl=download_prices(['SPY'],period='1y'); bs=bc['SPY']
+    spy_ok, spy_score_continuo = spy_health(bs)  # P57: tupla (bool, float)
 
     # Comparativa SPY semanal
     try:
@@ -3965,7 +4046,7 @@ def main():
         print('  Usando cache de descarga anterior')
         cache = pickle.load(open(CACHE_FILE,'rb'))
         cp,vp,hp,lp = cache.get('wl',(cp,vp,hp,lp))
-    pr=analyze_universe(PERSONAL_WATCHLIST,bs,cp,vp,hp,lp,spy_healthy=spy_ok)
+    pr=analyze_universe(PERSONAL_WATCHLIST,bs,cp,vp,hp,lp,spy_healthy=spy_ok,spy_score=spy_score_continuo)
     pgs=calc_groups(pr,is_sp=False); print(f'  OK {len(pr)} valores')
     # PUNTO 26 — nombrar a los tickers pedidos que no llegan al analisis (fallo de descarga,
     # historico insuficiente o delistado/renombrado — caso MMC->MRSH). Salir del "OK 31/32" mudo.
@@ -4016,7 +4097,7 @@ def main():
     elif 'sp' in cache:
         print('  Usando cache S&P 500')
         cs,vs,hs,ls = cache['sp']
-    sr=analyze_universe(sbs,bs,cs,vs,hs,ls,spy_healthy=spy_ok)
+    sr=analyze_universe(sbs,bs,cs,vs,hs,ls,spy_healthy=spy_ok,spy_score=spy_score_continuo)
     sgs=calc_groups(sr,is_sp=True); print(f'  OK {len(sr)} valores')
     faltan_uni = sorted(set(sa) - {r['ticker'] for r in sr})  # PUNTO 26
     if faltan_uni: print(f'  Sin datos/analisis en universo: {", ".join(faltan_uni)}')
@@ -4164,6 +4245,15 @@ def main():
     putcall_history = actualizar_putcall_history(putcall, macro, ts)
     if putcall_history is not None:
         ficheros_subida['putcall_history.json'] = json.dumps(clean_nan(putcall_history), ensure_ascii=False)
+    # P57 — serie diaria de spy_health score continuo, en el mismo commit unico.
+    try:
+        _spy_close_val = float(bs.iloc[-1]) if bs is not None and len(bs) > 0 else None
+        _ma200_val = float(bs.rolling(200).mean().iloc[-1]) if bs is not None and len(bs) >= 200 else None
+    except Exception:
+        _spy_close_val = None; _ma200_val = None
+    spy_health_history = actualizar_spy_health_history(spy_score_continuo, spy_ok, _spy_close_val, _ma200_val, ts)
+    if spy_health_history is not None:
+        ficheros_subida['spy_health_history.json'] = json.dumps(clean_nan(spy_health_history), ensure_ascii=False)
     upload_files_to_github(ficheros_subida)
     print('\n═══════════════════════════════════════')
     print('  TOP 5 TEMAS')
