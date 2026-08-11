@@ -2367,6 +2367,10 @@ def actualizar_rates_history(macro, ts):
 # sin el bloque — degradacion silenciosa, nunca un fallo.
 # ============================================================
 _CLOSES_CACHE = {}
+
+# P59 (11/08/2026) — interruptor del diagnostico de betas. Temporal:
+# poner a False (en AMBOS ficheros) cuando se cierre el diagnostico.
+DIAG_BETAS = True
 # PUNTO 25 — ultimo breadth calculado en esta ejecucion (calc_market_breadth corre antes
 # que update_setups_history en ambos flujos), para etiquetar cada setup con la dispersion
 # del dia en que nacio sin cambiar firmas de funciones.
@@ -2404,6 +2408,7 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
         # min_sesiones_beta retornos sean alcanzables cuando el historico da para ello.
         rets_beta = completo.tail(max(ventana, min_sesiones_beta + 1)).pct_change().dropna()
         bench_ret = bench.pct_change().reindex(rets_beta.index).dropna()
+        _diag = []
         for tk in rets_beta.columns:
             par = pd.concat([rets_beta[tk], bench_ret], axis=1).dropna()
             if len(par) >= min_sesiones_beta:  # P58: umbral propio para beta
@@ -2411,6 +2416,32 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
                 betas[tk] = round(float(cov[0, 1] / cov[1, 1]), 2) if cov[1, 1] > 0 else None
             else:
                 betas[tk] = None  # serie insuficiente — mejor None que valor espurio
+            if DIAG_BETAS:
+                # P59 (11/08/2026) — DIAGNOSTICO TEMPORAL, no toca ningun calculo.
+                # Las betas del 11/08 salieron implausibles (CPRT -0.48, UBER +0.51). Para
+                # separar "dato real" de "series mal emparejadas" hace falta ver, por ticker,
+                # cuantas sesiones entran y que correlacion tienen: si la CORRELACION tambien
+                # es negativa, la beta negativa es lo que dicen los datos; si la correlacion
+                # es ~0 con beta grande, el emparejamiento esta corrido.
+                try:
+                    _corr_b = round(float(par.iloc[:, 0].corr(par.iloc[:, 1])), 3) if len(par) > 2 else None
+                    _sd_tk = round(float(par.iloc[:, 0].std()) * 100, 2) if len(par) > 2 else None
+                    _sd_bn = round(float(par.iloc[:, 1].std()) * 100, 2) if len(par) > 2 else None
+                except Exception as _e:
+                    _traza('beta/diagnostico', _e); _corr_b = _sd_tk = _sd_bn = None
+                _diag.append(f'{tk}: n={len(par)} beta={betas.get(tk)} corr={_corr_b} '
+                             f'sd_tk={_sd_tk}% sd_bench={_sd_bn}%')
+        if DIAG_BETAS:
+            def _rango(s):
+                try:
+                    return f'{s.index[0].date()}..{s.index[-1].date()}'
+                except Exception:
+                    return 'n/d'
+            print(f'  [DIAG betas] rets_beta {len(rets_beta)} filas {_rango(rets_beta)} | '
+                  f'bench_ret {len(bench_ret)} filas {_rango(bench_ret)} | '
+                  f'indices identicos: {rets_beta.index.equals(bench_ret.index)}')
+            for _d in _diag:
+                print(f'  [DIAG betas]   {_d}')
     pares_altos = []
     tks = list(corr.columns)
     for i in range(len(tks)):
