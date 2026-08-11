@@ -56,6 +56,7 @@ ORQUESTACION = {
     'anotar_resoluciones',
     'actualizar_resoluciones_history',
     'actualizar_putcall_history',
+    'actualizar_spy_health_history',
 }
 
 # Llamadas donde los ARGUMENTOS deben coincidir. Es la comprobacion que habria
@@ -68,6 +69,7 @@ ARGS_CRITICOS = {
     'anotar_resoluciones',
     'actualizar_resoluciones_history',
     'actualizar_putcall_history',
+    'actualizar_spy_health_history',
 }
 
 # Diferencias intencionadas: main() envuelve en clean_nan antes de serializar,
