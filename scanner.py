@@ -2368,9 +2368,16 @@ def actualizar_rates_history(macro, ts):
 # ============================================================
 _CLOSES_CACHE = {}
 
-# P59 (11/08/2026) — interruptor del diagnostico de betas. Temporal:
-# poner a False (en AMBOS ficheros) cuando se cierre el diagnostico.
-DIAG_BETAS = True
+# P59 (11/08/2026) — interruptor del diagnostico de betas. RETIRADO el 11/08 tras
+# confirmar que el calculo es correcto (beta = corr * sd_tk/sd_bench cuadra al decimal).
+# Se deja el interruptor por si hay que volver a mirar; poner a True en AMBOS ficheros.
+DIAG_BETAS = False
+
+# P60 (11/08/2026) — |correlacion| minima con el SPY para considerar la beta una medida
+# real de exposicion al mercado. Con 60 sesiones, por debajo de 0.30 el coeficiente no
+# alcanza significacion y la beta resultante es ruido escalado por el cociente de
+# volatilidades (los candidatos se mueven 2.5-3.5x mas que el indice).
+MIN_CORR_BETA_SIGNIFICATIVA = 0.30
 # PUNTO 25 — ultimo breadth calculado en esta ejecucion (calc_market_breadth corre antes
 # que update_setups_history en ambos flujos), para etiquetar cada setup con la dispersion
 # del dia en que nacio sin cambiar firmas de funciones.
@@ -2399,6 +2406,7 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
         return None
     corr = rets.corr()
     betas = {}
+    corrs_bench = {}   # P60: correlacion de cada candidato con el benchmark
     bench = _CLOSES_CACHE.get('__BENCH__')
     if bench is not None:
         # P58 (ARREGLO 11/08/2026): la beta usa VENTANA PROPIA. Antes reutilizaba `rets`,
@@ -2414,8 +2422,17 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
             if len(par) >= min_sesiones_beta:  # P58: umbral propio para beta
                 cov = np.cov(par.iloc[:, 0], par.iloc[:, 1])
                 betas[tk] = round(float(cov[0, 1] / cov[1, 1]), 2) if cov[1, 1] > 0 else None
+                # P60 (11/08/2026): se guarda tambien la CORRELACION con el bench. Sin ella la
+                # beta es indistinguible entre "poca exposicion al mercado" y "ninguna relacion
+                # con el mercado": beta = corr * (sd_tk / sd_bench), y con sd_tk 2.5-3x la del
+                # SPY una correlacion de ruido (0.05-0.18) produce betas de 0.5 de magnitud.
+                try:
+                    corrs_bench[tk] = round(float(par.iloc[:, 0].corr(par.iloc[:, 1])), 3)
+                except Exception as _e:
+                    _traza('beta/corr-bench', _e); corrs_bench[tk] = None
             else:
                 betas[tk] = None  # serie insuficiente — mejor None que valor espurio
+                corrs_bench[tk] = None
             if DIAG_BETAS:
                 # P59 (11/08/2026) — DIAGNOSTICO TEMPORAL, no toca ningun calculo.
                 # Las betas del 11/08 salieron implausibles (CPRT -0.48, UBER +0.51). Para
@@ -2449,7 +2466,7 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
             c = float(corr.iloc[i, j])
             if c >= umbral_aviso:
                 pares_altos.append((tks[i], tks[j], round(c, 2)))
-    return {'corr': corr.round(2), 'betas': betas,
+    return {'corr': corr.round(2), 'betas': betas, 'corrs_bench': corrs_bench,
             'pares_altos': pares_altos, 'n_sesiones': int(len(rets))}
 
 def formato_correlacion_summary(cc, valid):
@@ -2464,8 +2481,35 @@ def formato_correlacion_summary(cc, valid):
             s += f'- {tks[i]} vs {tks[j]}: {cc["corr"].iloc[i, j]}\n'
     if cc['betas']:
         betas_validas = {tk: b for tk, b in cc['betas'].items() if b is not None}
+        corrs_b = cc.get('corrs_bench') or {}
         if betas_validas:
-            s += 'Beta vs SPY: ' + ' | '.join(f'{tk}:{b}' for tk, b in betas_validas.items()) + '\n'
+            # P60 (11/08/2026): la beta va SIEMPRE acompañada de su correlacion con el SPY y,
+            # por debajo de MIN_CORR_BETA_SIGNIFICATIVA, marcada como no significativa. El
+            # 11/08 el informe leyo betas de -0.48/-0.43 con correlaciones de -0.18/-0.12 como
+            # "cartera defensiva que amortigua la exposicion al SPY de cara al dato de manana":
+            # una beta baja por DESCORRELACION no protege de un gap: el valor no sigue al
+            # indice ni a la baja ni al alza. Se resuelve la semantica en Python en vez de
+            # esperar que el modelo la derive (misma leccion que el P33 y el ratio de dispersion).
+            partes = []
+            n_no_sig = 0
+            for tk, b in betas_validas.items():
+                c = corrs_b.get(tk)
+                if c is None:
+                    partes.append(f'{tk}:{b}')
+                elif abs(c) < MIN_CORR_BETA_SIGNIFICATIVA:
+                    partes.append(f'{tk}:{b} (corr {c} — NO SIGNIFICATIVA)')
+                    n_no_sig += 1
+                else:
+                    partes.append(f'{tk}:{b} (corr {c})')
+            s += 'Beta vs SPY: ' + ' | '.join(partes) + '\n'
+            if n_no_sig:
+                s += (f'AVISO BETAS: {n_no_sig} de {len(betas_validas)} betas tienen |correlacion| '
+                      f'con el SPY por debajo de {MIN_CORR_BETA_SIGNIFICATIVA} sobre {cc["n_sesiones"]} '
+                      'sesiones: NO son medidas fiables de exposicion al mercado. Una beta baja por '
+                      'DESCORRELACION no amortigua el riesgo de un evento macro ni de un gap del '
+                      'indice — el valor simplemente no sigue al SPY, y puede caer mas que el. NO '
+                      'describir el conjunto como defensivo, de baja beta ni protegido apoyandose '
+                      'en estas cifras.\n')
         elif cc['betas']:
             s += 'Beta vs SPY: no disponible (serie < 60 sesiones)\n'
     if cc['pares_altos']:
