@@ -27,7 +27,8 @@ PERSONAL_WATCHLIST = {
     'Semiconductores': ['ARM','AMD','MU','MTSI','POET','SMCI'],
     'Infraestructura AI': ['ANET','VRT','APLD','CORZ','IREN','CIFR','CRWV'],
     'Espacio y Defensa': ['RKLB','LUNR','ASTS','KTOS','BWXT'],
-    'Cuantica': ['IONQ'],
+    'Cuantica': ['IONQ','RGTI','QBTS','QUBT','INFQ'],
+    'Cuantica Seguridad': ['ARQQ'],
     'Robotica AI': ['BBAI','TSLA'],
     'Minerales': ['MP','UAMY'],
     'Biotech': ['VKTX','IBRX'],
@@ -2387,7 +2388,8 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
     series = {tk: _CLOSES_CACHE[tk] for tk in tickers if tk in _CLOSES_CACHE}
     if len(series) < 2:
         return None
-    df = pd.DataFrame(series).dropna().tail(ventana)
+    completo = pd.DataFrame(series).dropna()
+    df = completo.tail(ventana)
     rets = df.pct_change().dropna()
     if len(rets) < min_sesiones:
         return None
@@ -2395,9 +2397,15 @@ def calc_correlacion_candidatos(tickers, ventana=60, umbral_aviso=0.70, min_sesi
     betas = {}
     bench = _CLOSES_CACHE.get('__BENCH__')
     if bench is not None:
-        bench_ret = bench.pct_change().reindex(rets.index).dropna()
-        for tk in rets.columns:
-            par = pd.concat([rets[tk], bench_ret], axis=1).dropna()
+        # P58 (ARREGLO 11/08/2026): la beta usa VENTANA PROPIA. Antes reutilizaba `rets`,
+        # que sale de tail(ventana=60) y por tanto tiene 59 retornos: la condicion
+        # len(par) >= min_sesiones_beta (60) no se cumplia NUNCA y todas las betas
+        # salian None en produccion. Se toma una sesion mas de la necesaria para que
+        # min_sesiones_beta retornos sean alcanzables cuando el historico da para ello.
+        rets_beta = completo.tail(max(ventana, min_sesiones_beta + 1)).pct_change().dropna()
+        bench_ret = bench.pct_change().reindex(rets_beta.index).dropna()
+        for tk in rets_beta.columns:
+            par = pd.concat([rets_beta[tk], bench_ret], axis=1).dropna()
             if len(par) >= min_sesiones_beta:  # P58: umbral propio para beta
                 cov = np.cov(par.iloc[:, 0], par.iloc[:, 1])
                 betas[tk] = round(float(cov[0, 1] / cov[1, 1]), 2) if cov[1, 1] > 0 else None
