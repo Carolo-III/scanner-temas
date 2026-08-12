@@ -27,8 +27,7 @@ PERSONAL_WATCHLIST = {
     'Semiconductores': ['ARM','AMD','MU','MTSI','POET','SMCI'],
     'Infraestructura AI': ['ANET','VRT','APLD','CORZ','IREN','CIFR','CRWV'],
     'Espacio y Defensa': ['RKLB','LUNR','ASTS','KTOS','BWXT'],
-    'Cuantica': ['IONQ','RGTI','QBTS','QUBT','INFQ'],
-    'Cuantica Seguridad': ['ARQQ'],
+    'Cuantica': ['IONQ','RGTI','QBTS','QUBT','INFQ','ARQQ'],
     'Robotica AI': ['BBAI','TSLA'],
     'Minerales': ['MP','UAMY'],
     'Biotech': ['VKTX','IBRX'],
@@ -3295,7 +3294,99 @@ def bloque_setups(valid, fundamentales):
 
 MAX_RESOLUCIONES_DETALLADAS = 10   # P54: tope de resoluciones que se detallan en el prompt
 
-def construir_prompt(data):
+def recolectar_datos_candidatos(valid, fundamentales):
+    """P64 (12/08/2026) — FASE DE RED del prompt: las cuatro llamadas externas, juntas.
+
+    Ultimo tramo del refactor P47-P52. construir_prompt mezclaba en su fase final cuatro
+    llamadas a red (earnings/noticias, fundamentales extra, FMP, calendario macro y
+    correlacion) con el ensamblado del texto, de modo que NADA del ensamblado final se
+    podia ejecutar ni verificar sin salir a internet — la unica forma de comprobar un
+    cambio ahi era subirlo y lanzar Colab.
+
+    Separadas: esta funcion devuelve un dict con todo lo externo, y
+    ensamblar_bloques_externos() lo convierte en texto sin tocar la red. Los tests pueden
+    inyectar un dict fijo (construir_prompt(data, externos=...)) y verificar el texto.
+
+    OJO — dos efectos deliberados que NO son puros y por eso viven aqui y no en el
+    ensamblado: se mutan los dicts de `valid` (campos de earnings/noticias) y el dict
+    `fundamentales` compartido con main() y la celda del pipeline, que es como esos campos
+    acaban persistiendo en data.json.
+    """
+    # PUNTO 7 — earnings proximos + noticias, SOLO para los candidatos ya ordenados por
+    # ranking, consultando un margen extra (hasta 8) para poder reemplazar los descartados
+    # por earnings y seguir entregando hasta 5 setups cuando haya candidatos suficientes.
+    candidatos_para_news = valid[:8]
+    news_data = get_news_earnings([v['ticker'] for v in candidatos_para_news])
+    valid_final = []
+    descartados_por_earnings = []
+    for v in candidatos_para_news:
+        ne = news_data.get(v['ticker'], {})
+        v['earnings_date'] = ne.get('earnings_date')
+        v['dias_earnings'] = ne.get('dias_earnings')
+        v['earnings_accion'] = ne.get('earnings_accion', 'ignorar')
+        v['noticias'] = ne.get('noticias', [])
+        if v['earnings_accion'] == 'descartar':
+            descartados_por_earnings.append(v)
+            continue
+        valid_final.append(v)
+        if len(valid_final) == 5:
+            break
+
+    # NUEVO (05/07, opcion B) — campos de catalizador/calidad SOLO para los setups validos
+    # finales (<=5): yfinance como fuente principal (sin key, sin restriccion de simbolos)
+    # y FMP como complemento opcional (ROIC + serie EPS 8T, solo si hay key y el simbolo
+    # esta cubierto por el free tier). Los campos se fusionan en el dict `fundamentales`
+    # compartido con main() y la celda del pipeline (mutacion deliberada del mismo objeto),
+    # de modo que persisten en data.json — mismo patron por el que earnings/noticias
+    # persisten via values.
+    if valid_final:
+        tickers_setups = [v['ticker'] for v in valid_final]
+        extra_data = get_fundamentales_extra(tickers_setups)
+        for tk, campos in extra_data.items():
+            if campos:
+                fundamentales.setdefault(tk, {}).update(campos)
+        if FMP_KEY:
+            fmp_data = get_fundamentales_fmp(tickers_setups)
+            for tk, campos in fmp_data.items():
+                if campos:
+                    fundamentales.setdefault(tk, {}).update(campos)
+
+    # PUNTO 23 — eventos macro programados proximos (riesgo de gap de mercado)
+    eventos_macro = check_eventos_macro()
+
+    # PUNTO 17 — correlacion entre los candidatos finales (concentracion de cartera).
+    # Se calcula sobre los mismos <=5 setups que van al informe; si el cache no esta
+    # poblado o la muestra comun es corta, cc=None y el informe sale sin el bloque.
+    cc = calc_correlacion_candidatos([v['ticker'] for v in valid_final[:5]])
+
+    return {'valid': valid_final, 'descartados_por_earnings': descartados_por_earnings,
+            'eventos_macro': eventos_macro, 'correlacion': cc}
+
+
+def ensamblar_bloques_externos(externos, valid):
+    """P64 — texto de los bloques macro y correlacion. PURO: no toca la red.
+
+    Los print() de traza se quedan aqui a proposito: describen lo que entra en el prompt,
+    no la descarga, y asi el log sigue apareciendo en el mismo punto de siempre.
+    """
+    s = ''
+    eventos_macro = externos.get('eventos_macro')
+    if eventos_macro:
+        s += formato_eventos_macro_summary(eventos_macro)
+        print('  Eventos macro proximos: ' +
+              ', '.join(f"{e['evento'].split(' (')[0]} {e['fecha']} ({'HOY' if e['dias_habiles']==0 else str(e['dias_habiles'])+'dh'})" for e in eventos_macro))
+    cc = externos.get('correlacion')
+    if cc:
+        s += formato_correlacion_summary(cc, valid[:5])
+        if cc['pares_altos']:
+            print('  Correlacion candidatos: pares >=0.70: ' +
+                  ', '.join(f'{a}-{b} ({c})' for a, b, c in cc['pares_altos']))
+        else:
+            print(f'  Correlacion candidatos: sin pares >=0.70 ({cc["n_sesiones"]} sesiones)')
+    return s
+
+
+def construir_prompt(data, externos=None):
     """PUNTO 47 (06/08/2026) — construye el prompt del informe. Extraida de generate_analysis.
 
     generate_analysis tenia 552 lineas y hacia cuatro cosas: filtrar candidatos, calcular
@@ -3399,63 +3490,14 @@ def construir_prompt(data):
                                  'sector': round(sector_n*20, 1), 'cmf': round(cmf_n*20, 1)}
     valid = sorted(valid, key=lambda x: x.get('ranking', 0), reverse=True)
 
-    # PUNTO 7 — earnings proximos + noticias, SOLO para los candidatos ya ordenados por ranking,
-    # consultando un margen extra (hasta 8) para poder reemplazar los descartados por earnings
-    # y seguir entregando hasta 5 setups cuando haya candidatos suficientes.
-    candidatos_para_news = valid[:8]
-    news_data = get_news_earnings([v['ticker'] for v in candidatos_para_news])
-    valid_final = []
-    descartados_por_earnings = []
-    for v in candidatos_para_news:
-        ne = news_data.get(v['ticker'], {})
-        v['earnings_date'] = ne.get('earnings_date')
-        v['dias_earnings'] = ne.get('dias_earnings')
-        v['earnings_accion'] = ne.get('earnings_accion', 'ignorar')
-        v['noticias'] = ne.get('noticias', [])
-        if v['earnings_accion'] == 'descartar':
-            descartados_por_earnings.append(v)
-            continue
-        valid_final.append(v)
-        if len(valid_final) == 5:
-            break
-    valid = valid_final
-
-    # NUEVO (05/07, opcion B) — campos de catalizador/calidad SOLO para los setups validos
-    # finales (<=5): yfinance como fuente principal (sin key, sin restriccion de simbolos)
-    # y FMP como complemento opcional (ROIC + serie EPS 8T, solo si hay key y el simbolo
-    # esta cubierto por el free tier). Los campos se fusionan en el dict `fundamentales`
-    # compartido con main() y la celda del pipeline (mutacion deliberada del mismo objeto), de modo que
-    # persisten en data.json — mismo patron por el que earnings/noticias persisten via values.
-    if valid:
-        tickers_setups = [v['ticker'] for v in valid]
-        extra_data = get_fundamentales_extra(tickers_setups)
-        for tk, campos in extra_data.items():
-            if campos:
-                fundamentales.setdefault(tk, {}).update(campos)
-        if FMP_KEY:
-            fmp_data = get_fundamentales_fmp(tickers_setups)
-            for tk, campos in fmp_data.items():
-                if campos:
-                    fundamentales.setdefault(tk, {}).update(campos)
-
-    # PUNTO 23 — eventos macro programados proximos (riesgo de gap de mercado)
-    eventos_macro = check_eventos_macro()
-    if eventos_macro:
-        summary += formato_eventos_macro_summary(eventos_macro)
-        print('  Eventos macro proximos: ' +
-              ', '.join(f"{e['evento'].split(' (')[0]} {e['fecha']} ({'HOY' if e['dias_habiles']==0 else str(e['dias_habiles'])+'dh'})" for e in eventos_macro))
-
-    # PUNTO 17 — correlacion entre los candidatos finales (concentracion de cartera).
-    # Se calcula sobre los mismos <=5 setups que van al informe; si el cache no esta
-    # poblado o la muestra comun es corta, cc=None y el informe sale sin el bloque.
-    cc = calc_correlacion_candidatos([v['ticker'] for v in valid[:5]])
-    if cc:
-        summary += formato_correlacion_summary(cc, valid[:5])
-        if cc['pares_altos']:
-            print('  Correlacion candidatos: pares >=0.70: ' +
-                  ', '.join(f'{a}-{b} ({c})' for a, b, c in cc['pares_altos']))
-        else:
-            print(f'  Correlacion candidatos: sin pares >=0.70 ({cc["n_sesiones"]} sesiones)')
+    # P64 (12/08/2026) — FASE DE RED, extraida a recolectar_datos_candidatos(). A partir de
+    # aqui construir_prompt no toca la red: recibe (o pide una vez) un dict con todo lo
+    # externo y solo ENSAMBLA. Ver la docstring de esa funcion para el porque.
+    if externos is None:
+        externos = recolectar_datos_candidatos(valid, fundamentales)
+    valid = externos['valid']
+    descartados_por_earnings = externos['descartados_por_earnings']
+    summary += ensamblar_bloques_externos(externos, valid)
 
     summary+='\nSETUPS VALIDOS CON ANALISIS FUNDAMENTAL (usa EXACTAMENTE estos niveles, RIESGO y RANKING ya calculados — no los recalcules):\n'
     summary += bloque_setups(valid, fundamentales)
