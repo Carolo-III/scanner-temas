@@ -2387,6 +2387,12 @@ MIN_CORR_BETA_SIGNIFICATIVA = 0.30
 # rozar tambien este tope, la solucion siguiente es acotar longitud POR SECCION en el prompt,
 # no seguir subiendo el techo.
 MAX_TOKENS_INFORME = 12000
+
+# P63 (12/08/2026) — miembros minimos para que un tema entre en el ranking y su fortaleza
+# sectorial se considere medida. Por debajo, el score es el de sus pocos miembros (con n=1,
+# literalmente el de ese ticker) y el % sobre MM200 solo puede ser 0 o 100. Afecta sobre todo
+# a los grupos de PERSONAL_WATCHLIST, que son tematicos y deliberadamente pequeños.
+MIN_MIEMBROS_TEMA = 3
 # PUNTO 25 — ultimo breadth calculado en esta ejecucion (calc_market_breadth corre antes
 # que update_setups_history en ambos flujos), para etiquetar cada setup con la dispersion
 # del dia en que nacio sin cambiar firmas de funciones.
@@ -2732,8 +2738,18 @@ def calc_groups(res, is_sp=False):
         # ma200 ya es un booleano (True=cotiza sobre la MM200) calculado en analyze_universe.
         n_sobre_mm200 = sum(1 for m in mb if m.get('ma200'))
         pct_sobre_mm200 = round(100.0 * n_sobre_mm200 / len(mb), 1) if mb else 0.0
+        # P63 (12/08/2026) — un grupo con MUY POCOS miembros no produce magnitudes comparables
+        # con las de un sector poblado, ni en score ni en fortaleza estructural:
+        #   - score = media de los scores de sus miembros: con n=1 es el score de ESE ticker,
+        #     sin promediar nada. El 11-12/08 'Cuantica Seguridad' (solo ARQQ) lidero el top de
+        #     temas con 52,1 y luego 60,0, por encima de sectores con decenas de valores.
+        #   - pct_sobre_mm200 con n=1 solo puede valer 0 o 100, nunca un valor intermedio.
+        # Se marca aqui y cada consumidor decide: el ranking individual sustituye el componente
+        # sectorial por un valor neutro (ver construir_prompt) y el top de temas los separa.
+        comparable = len(mb) >= MIN_MIEMBROS_TEMA
         out.append({'group':gn,'score':round(np.mean(scores),1) if scores else 0,
                     'pct_sobre_mm200': pct_sobre_mm200,
+                    'tema_comparable': comparable,
                     'rs_mean':round(np.mean(r4s),1) if r4s else 0,
                     'breakouts':sum(1 for m in mb if m['breakout']),
                     'n':len(mb),'is_sp':is_sp,'top3':mb_s[:3],'members':mb_s})
@@ -3355,10 +3371,23 @@ def construir_prompt(data):
     #     individual; un sector donde el 80% de sus valores cotizan sobre la MM200 tiene
     #     viento de cola real, independientemente de cuantos de ellos sean candidatos hoy.
     group_mm200_map = {g['group']: g.get('pct_sobre_mm200', 0) for g in groups}
+    # P63 (12/08/2026): en grupos por debajo de MIN_MIEMBROS_TEMA el % sobre MM200 solo puede
+    # ser 0 o 100 (con n=1, el propio ticker), asi que el componente sectorial —20 de los 100
+    # puntos del ranking— se convertia en un todo-o-nada regalado por el tamaño del grupo y no
+    # por fortaleza sectorial real. Se sustituye por la MEDIANA de los grupos que si son
+    # comparables: neutro, y calculado con los datos del propio dia.
+    _mm200_comparables = [g.get('pct_sobre_mm200', 0) for g in groups
+                          if g.get('tema_comparable') and g.get('pct_sobre_mm200') is not None]
+    _mm200_neutro = round(float(np.median(_mm200_comparables)), 1) if _mm200_comparables else 50.0
+    _grupos_no_comparables = {g['group'] for g in groups if not g.get('tema_comparable')}
     for v in valid:
         sct_n = (v.get('sct') or 0) / 100.0
         rb_n = min((v.get('entry_range',{}).get('rr') or 0), 5.0) / 5.0
-        sector_n = group_mm200_map.get(v['group'], 0) / 100.0
+        if v['group'] in _grupos_no_comparables:
+            sector_n = _mm200_neutro / 100.0   # P63: neutro, no premio por grupo pequeño
+            v['sector_neutralizado'] = True
+        else:
+            sector_n = group_mm200_map.get(v['group'], 0) / 100.0
         cmf_raw = v.get('cmf')
         cmf_n = min(max((cmf_raw if cmf_raw is not None else 0) / 0.3, 0), 1)  # 0.3 CMF ~ tope practico
         v['ranking'] = round((sct_n*0.40 + rb_n*0.20 + sector_n*0.20 + cmf_n*0.20) * 100, 1)
@@ -4374,7 +4403,13 @@ def main():
     print('\n═══════════════════════════════════════')
     print('  TOP 5 TEMAS')
     print('═══════════════════════════════════════')
-    for i,g in enumerate(all_groups[:5]): print(f'  #{i+1}  {g["score"]:5.1f}  {g["group"]}')
+    # P63: los temas no comparables (pocos miembros) van aparte, no compiten en el ranking.
+    _comparables = [g for g in all_groups if g.get('tema_comparable')]
+    _no_comp = [g for g in all_groups if not g.get('tema_comparable')]
+    for i,g in enumerate(_comparables[:5]): print(f'  #{i+1}  {g["score"]:5.1f}  {g["group"]}')
+    if _no_comp:
+        print(f'  (fuera de ranking, menos de {MIN_MIEMBROS_TEMA} valores: '
+              + ', '.join(f'{g["group"]} {g["score"]:.1f} n={g["n"]}' for g in _no_comp[:5]) + ')')
     bos=[r for r in ar if r['breakout']]
     print(f'\n  Rupturas: {len(bos)} | SPY saludable: {spy_ok}')
     print(f'\n  Web: https://Carolo-III.github.io/scanner-temas')
