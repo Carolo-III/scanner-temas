@@ -2378,6 +2378,15 @@ DIAG_BETAS = False
 # alcanza significacion y la beta resultante es ruido escalado por el cociente de
 # volatilidades (los candidatos se mueven 2.5-3.5x mas que el indice).
 MIN_CORR_BETA_SIGNIFICATIVA = 0.30
+
+# P62 (12/08/2026) — tope de tokens de SALIDA del informe. El truncado recurrente NO venia
+# del tamaño del prompt (eso lo atacaron el P43 y el P54, que recortan la ENTRADA): venia de
+# este techo. El 11/08 a las 14:31 el informe se corto tras 17.118 caracteres (~8.000 tokens
+# en español, ~2,1 car/token) y se llevo entera la seccion RIESGOS DEL ESCENARIO, que el P36
+# cazo. Con 12.000 queda ~50% de margen sobre lo que se genera hoy. Si el informe crece hasta
+# rozar tambien este tope, la solucion siguiente es acotar longitud POR SECCION en el prompt,
+# no seguir subiendo el techo.
+MAX_TOKENS_INFORME = 12000
 # PUNTO 25 — ultimo breadth calculado en esta ejecucion (calc_market_breadth corre antes
 # que update_setups_history en ambos flujos), para etiquetar cada setup con la dispersion
 # del dia en que nacio sin cambiar firmas de funciones.
@@ -3486,7 +3495,7 @@ def generate_analysis(data, anthropic_key):
     client=ant.Anthropic(api_key=anthropic_key.strip())
     prompt = construir_prompt(data)
     import httpx
-    msg=client.messages.create(model='claude-opus-4-8',max_tokens=8000,messages=[{'role':'user','content':prompt}], timeout=httpx.Timeout(120.0, connect=30.0))
+    msg=client.messages.create(model='claude-opus-4-8',max_tokens=MAX_TOKENS_INFORME,messages=[{'role':'user','content':prompt}], timeout=httpx.Timeout(120.0, connect=30.0))
     texto = next(b.text for b in msg.content if hasattr(b, 'text'))
     if msg.stop_reason == 'max_tokens':
         print(f'  AVISO: el analisis se corto por limite de max_tokens (texto truncado, {len(texto)} caracteres generados). '
@@ -4029,10 +4038,34 @@ def generate_alerts(data, history, spy_healthy=True, bench_series=None):
         temas_verdes = sum(1 for g in groups if g['score'] >= 70)
         pct_verdes = temas_verdes / len(groups) if groups else 0
         if spy_en_maximo and pct_verdes < 0.15:  # SPY en maximo pero menos del 15% de temas en verde
-            msg = f'DIVERGENCIA SPY/AMPLITUD — {ts}\n\n'
+            # P61 (12/08/2026): el texto afirmaba "el mercado sube concentrado en pocas
+            # megacaps", una CAUSA que esta alerta no comprueba. El 11/08 salto con el SPX
+            # cerrando -0.32% y el Russell +0.32%, con ~300 valores del SPX en positivo: es
+            # decir, justo lo contrario de concentracion en megacaps. Pocos temas fuertes
+            # tiene DOS lecturas opuestas y las distingue la amplitud, que ya esta medida:
+            #   - amplitud DEBIL  -> concentracion real, pocos valores sostienen el indice
+            #   - amplitud SANA   -> mercado DISPERSO, sube mucha cosa pero nada lidera en
+            #                        bloque; no es fragilidad, es ausencia de tema dominante
+            # Se emite el dato y la lectura que corresponda, sin inventar la causa.
+            _br = (data.get('breadth') or {})
+            _mm200 = _br.get('pct_sobre_mm200')
+            _mm50 = _br.get('pct_sobre_mm50')
+            msg = f'DIVERGENCIA SPY/TEMAS — {ts}\n\n'
             msg += f'SPY cerca de maximos de 52 semanas (${round(spy_current,2)})\n'
             msg += f'Solo {temas_verdes} de {len(groups)} temas en zona fuerte ({round(pct_verdes*100,0):.0f}%)\n'
-            msg += 'El mercado sube concentrado en pocas megacaps. Extremar cautela.'
+            if _mm200 is not None:
+                msg += f'Amplitud: {_mm200}% sobre MM200'
+                msg += f' | {_mm50}% sobre MM50\n' if _mm50 is not None else '\n'
+                if _mm200 < 50:
+                    msg += ('Amplitud DEBIL: pocos valores sostienen al indice. '
+                            'Concentracion real, extremar cautela.')
+                else:
+                    msg += ('Amplitud SANA: mercado DISPERSO, no concentrado — sube mucho valor '
+                            'pero ningun tema lidera en bloque. Favorece la seleccion individual; '
+                            'no es señal de fragilidad por si sola.')
+            else:
+                msg += ('Sin dato de amplitud: no se puede distinguir concentracion real de '
+                        'mercado disperso. Contrastar antes de concluir.')
             msgs.append(msg)
     except Exception as _e:
         _traza('alertas/divergencia-spy-amplitud', _e)
