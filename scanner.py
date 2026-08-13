@@ -2700,6 +2700,7 @@ def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, s
             VAL_MARGEN_MINIMO = 0.50
             if volp and er.get('entry_lo'):
                 val = volp.get('val'); entry_lo = er['entry_lo']; stop_er = er.get('stop')
+                entry_hi = er.get('entry_hi')
                 coincide = abs(entry_lo / val - 1) <= 0.02 if val else False
                 if val and stop_er is not None and entry_lo > stop_er:
                     val_sobre_stop = val >= stop_er + (entry_lo - stop_er) * VAL_MARGEN_MINIMO
@@ -2708,6 +2709,21 @@ def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, s
                 volp['coincide_val'] = coincide
                 volp['val_valido_como_soporte'] = val_sobre_stop
                 volp['confirma_pullback'] = coincide and val_sobre_stop
+                # P67 (13/08/2026) — POSICION REAL del VAL respecto al rango de entrada.
+                # `coincide` solo compara VAL con entry_lo con una tolerancia del 2%, asi que
+                # un VAL POR DEBAJO de todo el rango la pasa igual: el 13/08 $COST salio con
+                # VAL 923.65 y entrada 939.87-958.85 (VAL un 1.76% por debajo de entry_lo) y
+                # el prompt afirmaba "la entrada coincide con VAL". El modelo lo detecto y se
+                # corrigio a media frase, dejando el razonamiento visible en el informe. Se
+                # calcula aqui la relacion exacta para que el texto la diga en vez de asumirla.
+                if val and entry_lo:
+                    if entry_hi and entry_lo <= val <= entry_hi:
+                        volp['val_posicion'] = 'dentro'
+                    elif val < entry_lo:
+                        volp['val_posicion'] = 'debajo'
+                    else:
+                        volp['val_posicion'] = 'encima'
+                    volp['val_dist_entry_lo_pct'] = round((val / entry_lo - 1) * 100, 2)
             sc=composite_score(r4,r13,vz,bi['breakout'],mah,spy_healthy,spy_score=spy_score)
             # Score de Confirmacion Tecnica (SCT)
             atr_val = atr_pre  # ya calculado antes
@@ -3252,7 +3268,19 @@ def bloque_setups(valid, fundamentales):
         if vprof:
             summary+=f' | POC:${vprof["poc"]} VAH:${vprof["vah"]} VAL:${vprof["val"]}'
             if vprof.get('confirma_pullback'):
-                summary+=' (entrada coincide con VAL — refuerza calidad del pullback)'
+                # P67 — se describe la posicion REAL del VAL, no una coincidencia asumida.
+                _pos = vprof.get('val_posicion')
+                _d = vprof.get('val_dist_entry_lo_pct')
+                if _pos == 'dentro':
+                    summary+=' (VAL DENTRO de la zona de entrada — refuerza calidad del pullback:'
+                    summary+=' el soporte tiene respaldo de volumen, no solo tecnico)'
+                elif _pos == 'debajo' and _d is not None:
+                    summary+=(f' (VAL {abs(_d)}% POR DEBAJO del limite inferior de la entrada — cerca,'
+                              ' pero NO coincide con la zona: es un soporte de volumen inmediatamente'
+                              ' por debajo, no un soporte sobre el que se entra. NO afirmar que la'
+                              ' entrada coincide con el VAL)')
+                else:
+                    summary+=' (VAL proximo a la zona de entrada — respaldo de volumen cercano)'
             # NUEVO (05/07) — VAL coincide con la entrada pero esta demasiado cerca del stop
             # (dentro de la mitad inferior del rango entrada->stop): NO es soporte util. Se
             # marca explicitamente para que Claude no lo cite como argumento de calidad.
@@ -3599,7 +3627,7 @@ def construir_prompt(data, externos=None):
         'CMF>0.1=presion compradora sostenida (no afirmes que son instituciones, di acumulacion o presion compradora), CMF<0=presion vendedora; SCT>70=confirmacion tecnica alta; '
         'SQUEEZE=compresion de volatilidad previa a ruptura potente. '
         'RVOL (volumen relativo) = volumen actual / promedio de los ultimos 30 dias: RVOL>2.0=volumen excepcional que confirma participacion institucional real; RVOL 1.2-2.0=respaldo de volumen solido (umbral minimo exigido en rupturas); RVOL<1.2=volumen insuficiente (este caso ya no llega a ENTRADAS en rupturas, pero puede aparecer en pullbacks donde el filtro no aplica). Menciona el RVOL en el texto de cada setup de forma natural cuando aporte informacion util (ej. "el volumen multiplica por 1.8 su media de 30 dias, confirmando la participacion compradora") pero no lo cites mecanicamente en todos los casos. '
-        'PUNTO 11 — VOLUME PROFILE: si un setup incluye POC/VAH/VAL, son niveles de precio donde se ha concentrado el volumen de las ultimas 60 sesiones (aproximacion sobre datos diarios, no tick data real) y funcionan como soporte/resistencia institucional — zonas donde mas dinero ha cambiado de manos, no un indicador de momentum. POC es el nivel con mayor volumen acumulado; VAH/VAL acotan el rango donde se concentra el 70% del volumen. Si aparece la nota "entrada coincide con VAL", menciona explicitamente que la zona de entrada coincide con el limite inferior del area de valor, lo que refuerza la calidad del pullback como soporte real con respaldo de volumen, no solo tecnico (medias moviles). Si no hay coincidencia, puedes citar el POC como referencia de resistencia o soporte cercano si esta a una distancia relevante del precio actual, pero sin forzar la mencion en cada setup. Si aparece la nota "VAL dentro del rango de riesgo, demasiado cerca del stop — NO citarlo como soporte", significa que el VAL coincide con la zona de entrada pero queda a menos de la mitad del recorrido entrada->stop por encima del stop: si el precio baja hasta el VAL ya ha consumido la mayor parte del margen hacia el stop, asi que ese nivel NO protege la posicion. En ese caso esta PROHIBIDO citar el VAL como soporte o como argumento de calidad del pullback; como mucho puedes mencionarlo como referencia de volumen neutral, o directamente omitirlo. '
+        'PUNTO 11 — VOLUME PROFILE: si un setup incluye POC/VAH/VAL, son niveles de precio donde se ha concentrado el volumen de las ultimas 60 sesiones (aproximacion sobre datos diarios, no tick data real) y funcionan como soporte/resistencia institucional — zonas donde mas dinero ha cambiado de manos, no un indicador de momentum. POC es el nivel con mayor volumen acumulado; VAH/VAL acotan el rango donde se concentra el 70% del volumen. Sobre la relacion entre el VAL y la zona de entrada, USA LITERALMENTE lo que diga la nota y no la reformules: si dice "VAL DENTRO de la zona de entrada", puedes afirmar que se entra sobre el limite inferior del area de valor, lo que refuerza la calidad del pullback como soporte real con respaldo de volumen y no solo tecnico (medias moviles); si dice "VAL X% POR DEBAJO del limite inferior de la entrada", esta PROHIBIDO escribir que la entrada coincide con el VAL — el VAL queda por debajo de toda la zona y solo es un soporte de volumen cercano bajo ella. Comprueba siempre el dato: si el VAL es menor que el extremo inferior del rango de entrada, no hay coincidencia. Si no hay coincidencia, puedes citar el POC como referencia de resistencia o soporte cercano si esta a una distancia relevante del precio actual, pero sin forzar la mencion en cada setup. Si aparece la nota "VAL dentro del rango de riesgo, demasiado cerca del stop — NO citarlo como soporte", significa que el VAL coincide con la zona de entrada pero queda a menos de la mitad del recorrido entrada->stop por encima del stop: si el precio baja hasta el VAL ya ha consumido la mayor parte del margen hacia el stop, asi que ese nivel NO protege la posicion. En ese caso esta PROHIBIDO citar el VAL como soporte o como argumento de calidad del pullback; como mucho puedes mencionarlo como referencia de volumen neutral, o directamente omitirlo. '
         'CONSENSO DE ANALISTAS Y PRECIO OBJETIVO: si el campo FUND incluye "Consenso:" y/o "TargetMedio:", son datos de Wall Street (calificacion media y precio objetivo a 12 meses de los analistas que cubren el valor), no un dato tecnico ni del sistema. Menciona el consenso como contexto adicional cuando refuerce o contradiga la tesis tecnica (ej. consenso "buy" con upside relevante respalda la entrada; un consenso tibio o un upside ya agotado por el rally reciente merece mencionarse como matiz de cautela), pero NUNCA confundas el TargetMedio de los analistas con el objetivo tecnico del sistema (target_parcial/target_final) — son cosas distintas, calculadas de forma distinta, y deben presentarse siempre como dos referencias separadas, no intercambiables. Si el numero de analistas (n_opiniones) es bajo (1-3), matiza que el consenso tiene poco respaldo estadistico. No fuerces la mencion si no aporta nada relevante al caso concreto. '
         'DATOS DE CATALIZADOR Y CALIDAD (si aparecen en FUND): RevisionesAnalistas90d, UltimaRevision y SorpresaEPS son contexto de CATALIZADOR — explican POR QUE puede estar entrando dinero ahora (analistas mejorando estimaciones recientemente, ultimo trimestre batiendo expectativas), no son datos de valoracion estatica: usalos igual que las noticias, integrados en la narrativa del setup cuando refuercen o cuestionen el momentum (varias subidas de calificacion recientes respaldan la entrada; varias bajadas recientes con momentum tecnico alcista merecen mencionarse como divergencia de opinion). Una sorpresa de EPS claramente positiva (>+5%) es catalizador favorable; una negativa reciente es matiz de cautela aunque el precio haya aguantado. EPStrim es la serie de EPS reales de los ultimos trimestres reportados (hasta 5, del mas antiguo al mas reciente): usala solo para describir la tendencia (aceleracion, estancamiento, deterioro), sin recitar la serie completa en el texto. MargenBruto, MargenOperativo, ROIC y FCFgrowth son calidad fundamental adicional: ROIC>15% indica uso eficiente del capital, FCFgrowth positivo indica generacion de caja creciente — trata estos campos igual que el resto de fundamentales (PER, ROE...), como contexto que apoya o cuestiona la entrada tecnica, sin darles mas peso que al momentum. Estos campos pueden faltar en algunos setups (cobertura parcial del proveedor): si no estan, no los menciones ni especules sobre ellos. '
         'PUNTO 12-13 — OBJETIVO CON TECHO NO ESTANDAR: en la inmensa mayoria de setups el objetivo final se deriva del maximo de 52 semanas (techo estandar, no necesita explicacion en el texto). Si el setup incluye una nota "OBJETIVO:", significa que el valor sufrio una correccion superior al 20% desde su maximo de 52 semanas, lo que invalida ese maximo como techo realista a corto plazo — el sistema ha sustituido el techo por un retroceso de Fibonacci de esa caida (61.8% o 76.4%, el que deje margen suficiente) o, si ninguno de los dos da margen, por una proyeccion de rango medio (ATR). Cuando esto ocurra, menciona brevemente en el parrafo del setup que el objetivo es mas conservador de lo habitual precisamente porque el valor no ha recuperado el terreno perdido tras esa correccion, en vez de asumir que el objetivo viene del maximo historico sin matizar. No necesitas explicar la formula exacta (61.8 vs 76.4 vs ATR), basta con transmitir que el objetivo esta acotado por una correccion previa relevante. '
