@@ -2392,6 +2392,12 @@ MAX_TOKENS_INFORME = 12000
 # literalmente el de ese ticker) y el % sobre MM200 solo puede ser 0 o 100. Afecta sobre todo
 # a los grupos de PERSONAL_WATCHLIST, que son tematicos y deliberadamente pequeños.
 MIN_MIEMBROS_TEMA = 3
+
+# P65 (13/08/2026) — % minimo de tickers con dato en la ultima sesion para que data.json
+# pueda sustituir al que ya esta publicado. El P22 avisa desde 90; aqui el umbral es mas
+# bajo a proposito (bloquear es mas caro que avisar) y solo frena vuelcos claramente
+# incompletos como el del 12/08, que se quedo en 85,5%.
+MIN_FRESCOS_PARA_PUBLICAR = 88.0
 # PUNTO 25 — ultimo breadth calculado en esta ejecucion (calc_market_breadth corre antes
 # que update_setups_history en ambos flujos), para etiquetar cada setup con la dispersion
 # del dia en que nacio sin cambiar firmas de funciones.
@@ -2568,8 +2574,14 @@ def check_frescura_panel(close_df):
         msg += ' | AVISO: mas del 10% de tickers sin dato en la ultima sesion (descarga parcial)'
     print(msg)
     _BREADTH_CACHE['ultima_sesion'] = str(ultima.date())  # PUNTO 24 — fecha de sesion para la serie de amplitud
-    return {'ultima_sesion': str(ultima.date()), 'retraso_habiles': int(retraso),
-            'pct_tickers_frescos': pct_frescos}
+    resultado = {'ultima_sesion': str(ultima.date()), 'retraso_habiles': int(retraso),
+                 'pct_tickers_frescos': pct_frescos}
+    # P65 — se guarda el chequeo del PANEL AMPLIO (el ultimo que se ejecuta, sobre 500+
+    # valores) para que la subida pueda decidir si data.json es publicable. La watchlist
+    # son 36 tickers y su porcentaje es mucho mas volatil, asi que no debe mandar.
+    if close_df.shape[1] >= 100:
+        _BREADTH_CACHE['frescura_panel'] = resultado
+    return resultado
 
 
 def check_data_health(close_df, high_df, low_df, vol_df, max_var_diaria=0.50, min_vol_dias=3):
@@ -3384,6 +3396,35 @@ def ensamblar_bloques_externos(externos, valid):
         else:
             print(f'  Correlacion candidatos: sin pares >=0.70 ({cc["n_sesiones"]} sesiones)')
     return s
+
+
+def data_json_publicable(min_frescos=MIN_FRESCOS_PARA_PUBLICAR):
+    """P65 (13/08/2026) — ¿es data.json lo bastante bueno para pisar el que ya hay?
+
+    El 12/08 yfinance sirvio el panel incompleto (85,5% de tickers con dato en la ultima
+    sesion, 29,7% en la watchlist). El P22 lo detecto y lo imprimio DOS veces... y el
+    scanner subio igualmente, sustituyendo un data.json bueno por otro peor: la amplitud
+    perdio 74 valores del recuento (A/D 246/200 en vez de 288/232) y varias resoluciones
+    RETROCEDIERON a precios antiguos. Se repitio en tres ejecuciones seguidas.
+
+    Avisar no basta cuando el efecto es pisar el dato bueno — misma leccion que el P55 con
+    el informe vacio. Aqui la asimetria es clara: conservar el data.json de ayer degrada la
+    web unas horas; publicar uno incompleto corrompe lo que se lee y se decide HOY.
+
+    Solo afecta a data.json. Los historicos (breadth, rates, checkpoints, resoluciones,
+    putcall, spy_health) siguen su curso: son series con dedupe por fecha y la ejecucion
+    siguiente los corrige, mientras que data.json es un vuelco completo sin historial.
+    """
+    fr = _BREADTH_CACHE.get('frescura_panel')
+    if not fr:
+        return True, None   # sin chequeo (panel pequeño o vacio): no bloquear
+    pct = fr.get('pct_tickers_frescos')
+    if pct is None or pct >= min_frescos:
+        return True, None
+    return False, (f'data.json NO SE SUBE: solo {pct}% de tickers con dato en la ultima '
+                   f'sesion ({fr.get("ultima_sesion")}), por debajo del minimo de {min_frescos}%. '
+                   'Se conserva el data.json anterior para no pisarlo con datos incompletos. '
+                   'El resto de historicos si se actualizan.')
 
 
 def construir_prompt(data, externos=None):
@@ -4441,6 +4482,11 @@ def main():
     spy_health_history = actualizar_spy_health_history(spy_score_continuo, spy_ok, _spy_close_val, _ma200_val, ts)
     if spy_health_history is not None:
         ficheros_subida['spy_health_history.json'] = json.dumps(clean_nan(spy_health_history), ensure_ascii=False)
+    # P65 — no pisar data.json con un vuelco incompleto (ver data_json_publicable).
+    _publicable, _motivo = data_json_publicable()
+    if not _publicable:
+        ficheros_subida.pop('data.json', None)
+        print(f'  🔴 {_motivo}')
     upload_files_to_github(ficheros_subida)
     print('\n═══════════════════════════════════════')
     print('  TOP 5 TEMAS')
