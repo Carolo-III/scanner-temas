@@ -2511,25 +2511,33 @@ def formato_correlacion_summary(cc, valid):
             # indice ni a la baja ni al alza. Se resuelve la semantica en Python en vez de
             # esperar que el modelo la derive (misma leccion que el P33 y el ratio de dispersion).
             partes = []
-            n_no_sig = 0
+            no_sig = []
             for tk, b in betas_validas.items():
                 c = corrs_b.get(tk)
                 if c is None:
                     partes.append(f'{tk}:{b}')
                 elif abs(c) < MIN_CORR_BETA_SIGNIFICATIVA:
                     partes.append(f'{tk}:{b} (corr {c} — NO SIGNIFICATIVA)')
-                    n_no_sig += 1
+                    no_sig.append(tk)
                 else:
                     partes.append(f'{tk}:{b} (corr {c})')
             s += 'Beta vs SPY: ' + ' | '.join(partes) + '\n'
-            if n_no_sig:
-                s += (f'AVISO BETAS: {n_no_sig} de {len(betas_validas)} betas tienen |correlacion| '
-                      f'con el SPY por debajo de {MIN_CORR_BETA_SIGNIFICATIVA} sobre {cc["n_sesiones"]} '
-                      'sesiones: NO son medidas fiables de exposicion al mercado. Una beta baja por '
-                      'DESCORRELACION no amortigua el riesgo de un evento macro ni de un gap del '
-                      'indice — el valor simplemente no sigue al SPY, y puede caer mas que el. NO '
-                      'describir el conjunto como defensivo, de baja beta ni protegido apoyandose '
-                      'en estas cifras.\n')
+            if no_sig:
+                # P66 (13/08/2026): el aviso NOMBRA los tickers afectados en vez de dar solo un
+                # recuento. El 12/08 el informe escribio "las betas negativas de $FOXA (-0.41) y
+                # $CBRE (0.28)" — 0.28 es POSITIVA: al reconstruir la lista por su cuenta agrupo
+                # las no significativas bajo un adjetivo comun. Dandole los nombres hechos y
+                # prohibiendo el agrupamiento por signo, no hay nada que reconstruir.
+                s += (f'AVISO BETAS: las betas de {", ".join(no_sig)} ({len(no_sig)} de '
+                      f'{len(betas_validas)}) tienen |correlacion| con el SPY por debajo de '
+                      f'{MIN_CORR_BETA_SIGNIFICATIVA} sobre {cc["n_sesiones"]} sesiones: NO son '
+                      'medidas fiables de exposicion al mercado. Una beta baja por DESCORRELACION '
+                      'no amortigua el riesgo de un evento macro ni de un gap del indice — el valor '
+                      'simplemente no sigue al SPY, y puede caer mas que el. NO describir el '
+                      'conjunto como defensivo, de baja beta ni protegido apoyandose en estas '
+                      'cifras, y NO agruparlas bajo un adjetivo comun de signo ("las betas '
+                      'negativas de X e Y"): cada una tiene el signo que figura arriba y hay '
+                      'positivas y negativas entre ellas.\n')
         elif cc['betas']:
             s += 'Beta vs SPY: no disponible (serie < 60 sesiones)\n'
     if cc['pares_altos']:
