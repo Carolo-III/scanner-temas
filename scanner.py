@@ -2391,7 +2391,12 @@ MAX_TOKENS_INFORME = 12000
 # sectorial se considere medida. Por debajo, el score es el de sus pocos miembros (con n=1,
 # literalmente el de ese ticker) y el % sobre MM200 solo puede ser 0 o 100. Afecta sobre todo
 # a los grupos de PERSONAL_WATCHLIST, que son tematicos y deliberadamente pequeños.
-MIN_MIEMBROS_TEMA = 3
+# BAJADO A 2 el 13/08/2026: con 3 quedaban fuera del ranking 4 grupos de watchlist (Minerales,
+# Biotech, Robotica AI con n=2, y Hardware con n=1) justo mientras la rotacion tematica se
+# aceleraba, y perder de vista tres temas activos costaba mas que el sesgo residual de un n=2.
+# Con 2 solo queda fuera el caso indefendible: el grupo de UN solo valor, donde el score del
+# tema ES el del ticker y el % sobre MM200 es un 0/100 sin termino medio.
+MIN_MIEMBROS_TEMA = 2
 
 # P65 (13/08/2026) — % minimo de tickers con dato en la ultima sesion para que data.json
 # pueda sustituir al que ya esta publicado. El P22 avisa desde 90; aqui el umbral es mas
