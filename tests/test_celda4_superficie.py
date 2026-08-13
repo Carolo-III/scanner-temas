@@ -249,7 +249,8 @@ def test_cobertura_de_la_lista_de_orquestacion():
                   'merge_breadth_entry', 'merge_rates_entry',
                   'construir_entradas_checkpoints', 'merge_checkpoints',
                   'construir_entradas_resoluciones', 'merge_resoluciones', '_dias_habiles_entre',
-                  'get_putcall_cboe', 'construir_entrada_putcall', 'merge_putcall'}
+                  'get_putcall_cboe', 'construir_entrada_putcall', 'merge_putcall',
+                  'data_json_publicable'}
     sin_vigilar = llamadas_main - ORQUESTACION - auxiliares
     assert not sin_vigilar, (
         'Funciones nuevas llamadas en main() y no vigiladas por este test: %s. '
