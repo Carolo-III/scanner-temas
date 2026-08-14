@@ -31,7 +31,7 @@ PERSONAL_WATCHLIST = {
     'Robotica AI': ['BBAI','TSLA'],
     'Minerales': ['MP','UAMY'],
     'Biotech': ['VKTX','IBRX'],
-    'Hardware': ['SNDK'],
+    'Memoria y Almacenamiento': ['SNDK','WDC','STX'],
     'Momentum': ['KOPN','ONDS','BE','LITE','GILT'],
 }
 
