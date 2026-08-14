@@ -463,16 +463,28 @@ def _calc_macro_regimen():
     # llegan a veces como 47.45 en vez de 4.745). Es INSTRUMENTACION: no genera alerta
     # ni toca el score. La serie se persiste en rates_history.json para que el P16
     # pueda calibrarse algun dia con evidencia propia, no con intuicion.
+    # P70 (14/08/2026) — el NIVEL y la VARIACION tienen requisitos distintos y ya no
+    # comparten umbral. Antes el bucle exigia 21 sesiones para todo y descartaba el tramo
+    # entero, pero un nivel solo necesita el ULTIMO dato: las 21 sesiones hacen falta para
+    # la variacion a 20 sesiones, no para el nivel. El 14/08 ^TNX (bono 10 años) llego con
+    # 15 sesiones y se descarto completo, y como las DOS pendientes (10y-3m y 30y-10y) se
+    # apoyan en us10y, la curva entera desaparecio del bloque macro teniendo el dato de hoy
+    # disponible. Ahora el nivel entra con una sola sesion y la variacion se omite si no
+    # hay historico suficiente: se degrada el indicador que falta, no el tramo completo.
     curva_niveles, curva_var = {}, {}
+    _sin_variacion = []
     for clave, tk in (('us3m', '^IRX'), ('us5y', '^FVX'),
                       ('us10y', '^TNX'), ('us30y', '^TYX')):
-        serie = _serie(tk)
-        if len(serie) < 21:
+        serie = _serie(tk, minimo=1)
+        if len(serie) < 1:
             continue
         vals = serie.values.astype(float)
         if vals[-1] > 20: vals = vals / 10  # misma guarda de decimas que us30y
         curva_niveles[clave] = round(float(vals[-1]), 3)
-        curva_var[clave] = round(float(vals[-1] - vals[-21]) * 100, 1)
+        if len(vals) >= 21:
+            curva_var[clave] = round(float(vals[-1] - vals[-21]) * 100, 1)
+        else:
+            _sin_variacion.append(f'{clave}({len(vals)})')
     if curva_niveles:
         _pend = calc_pendientes_curva(curva_niveles)
         reg['curva'] = {'niveles': curva_niveles, 'variacion_20s_pb': curva_var,
@@ -485,6 +497,11 @@ def _calc_macro_regimen():
             print(f'  🔴 AVISO macro: curva SIN pendientes calculables — solo llegaron los '
                   f'tramos {", ".join(sorted(curva_niveles))}. La serie se persiste igual, '
                   'pero la curva no aparecera en el bloque macro.')
+        # P70 — el nivel esta pero la variacion a 20 sesiones no: la pendiente SI se
+        # calcula (solo usa niveles), lo que se pierde es la lectura de velocidad.
+        if _sin_variacion:
+            print('  AVISO macro: tramos de curva sin variacion a 20 sesiones (historico '
+                  'corto, el nivel si entra): ' + ', '.join(sorted(_sin_variacion)))
     # P69 — el aviso sale SIEMPRE que falte algo, aunque el resto del bloque este bien:
     # una degradacion parcial es justo la que pasa desapercibida.
     if _faltan or _cortas:
