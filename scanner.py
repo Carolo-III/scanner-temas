@@ -379,10 +379,23 @@ def _calc_macro_regimen():
                       auto_adjust=True, progress=False, threads=True)
     if raw.empty: return {}
     close = raw['Close'] if isinstance(raw.columns, pd.MultiIndex) else raw
-    def _serie(tk):
-        if tk in close.columns:
-            return close[tk].dropna()
-        return pd.Series(dtype=float)
+    # P69 (14/08/2026) — se registra QUE series faltan o llegan cortas. Antes _serie
+    # devolvia una Serie vacia y cada bloque hacia `if len(s) >= 21: ...` sin else: la
+    # serie desaparecia del informe Y de data.json como si nunca se hubiera pedido. Del
+    # 12 al 14/08 el bloque macro perdio primero la curva de tipos y luego tambien el
+    # US30Y, en dos escalones, sin una sola linea de log — con ellos se fue la
+    # instrumentacion de curva sembrada con 120 sesiones el 01/08. El P41/P42 acabo con
+    # los fallos mudos por excepcion capturada; este es el otro tipo de silencio, el del
+    # dato que simplemente no viene, y no lo cubria ninguna traza.
+    _faltan, _cortas = [], []
+    def _serie(tk, minimo=21):
+        if tk not in close.columns:
+            _faltan.append(tk)
+            return pd.Series(dtype=float)
+        s = close[tk].dropna()
+        if len(s) < minimo:
+            _cortas.append(f'{tk}({len(s)})')
+        return s
     reg = {}
     # 1) US30Y — bono a 30 años
     s30 = _serie('^TYX')
@@ -461,8 +474,29 @@ def _calc_macro_regimen():
         curva_niveles[clave] = round(float(vals[-1]), 3)
         curva_var[clave] = round(float(vals[-1] - vals[-21]) * 100, 1)
     if curva_niveles:
+        _pend = calc_pendientes_curva(curva_niveles)
         reg['curva'] = {'niveles': curva_niveles, 'variacion_20s_pb': curva_var,
-                        'pendientes_pb': calc_pendientes_curva(curva_niveles)}
+                        'pendientes_pb': _pend}
+        # P69 — caso sutil: hay niveles (y la entrada SI se persiste en rates_history)
+        # pero faltan tramos para calcular pendientes, asi que la linea de curva
+        # desaparece del log sin que se pierda la serie. Es la degradacion parcial que
+        # nadie detecta: el fichero sigue en el commit y el ojo no echa en falta nada.
+        if not _pend:
+            print(f'  🔴 AVISO macro: curva SIN pendientes calculables — solo llegaron los '
+                  f'tramos {", ".join(sorted(curva_niveles))}. La serie se persiste igual, '
+                  'pero la curva no aparecera en el bloque macro.')
+    # P69 — el aviso sale SIEMPRE que falte algo, aunque el resto del bloque este bien:
+    # una degradacion parcial es justo la que pasa desapercibida.
+    if _faltan or _cortas:
+        _det = []
+        if _faltan:
+            _det.append('sin datos: ' + ', '.join(sorted(set(_faltan))))
+        if _cortas:
+            _det.append('serie corta (<21 sesiones): ' + ', '.join(sorted(set(_cortas))))
+        print('  🔴 AVISO macro: no se pudieron calcular todas las series de regimen — '
+              + ' | '.join(_det) + '. Los indicadores afectados NO aparecen en el informe '
+              'ni se persisten; si se repite varios dias, revisar los simbolos en Yahoo.')
+        _traza('macro/series-ausentes', RuntimeError('; '.join(_det)))
     if reg:
         alertas = [k for k, v in reg.items() if v.get('alerta')]
         partes = []
