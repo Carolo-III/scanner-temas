@@ -4132,7 +4132,27 @@ def upload_to_github(filename, content):
     if r.status_code in [200,201]:
         print(f'  OK {filename}')
     else:
-        print(f'  Error {filename}: HTTP {r.status_code} — {r.json().get("message","sin detalle")}')
+        # P71 (14/08/2026) — el manejador de errores REVENTABA al manejar el error:
+        # r.json() asume cuerpo JSON y un 401 de GitHub puede venir vacio o en HTML, asi
+        # que lanzaba JSONDecodeError, abortaba la celda entera y dejaba el pipeline a
+        # medias. El 14/08 subio data.json, history.json y setups_history.json y los otros
+        # siete se quedaron sin subir: exactamente la inconsistencia que el commit unico
+        # existe para evitar. Un fallo de subida debe INFORMAR, nunca tumbar la ejecucion.
+        print(f'  Error {filename}: HTTP {r.status_code} — {_mensaje_error_github(r)}')
+        raise RuntimeError(f'subida de {filename} fallida: HTTP {r.status_code}')
+
+def _mensaje_error_github(r):
+    """P71 — mensaje de error de la API sin asumir que el cuerpo es JSON.
+
+    GitHub devuelve JSON en casi todos los errores, pero no en todos: un 401 puede llegar
+    con cuerpo vacio. Llamar a r.json() ahi lanza JSONDecodeError DENTRO del manejador de
+    errores, que es la peor forma posible de fallar.
+    """
+    try:
+        return r.json().get('message', 'sin detalle')
+    except Exception:
+        texto = (r.text or '').strip().replace('\n', ' ')
+        return (texto[:120] + '...') if len(texto) > 120 else (texto or 'sin cuerpo de respuesta')
 
 def upload_files_to_github(files):
     """
@@ -4193,8 +4213,22 @@ def upload_files_to_github(files):
         print(f'  OK commit unico ({", ".join(limpios.keys())})')
     except Exception as e:
         print(f'  ⚠️ Commit unico fallido ({type(e).__name__}) — degradando a subidas individuales')
+        # P71 — cada fichero va en su propio try: que uno falle no puede impedir que los
+        # demas se suban. Antes la primera excepcion abortaba el bucle y el resto de la
+        # ejecucion (top de temas incluido). Al final se resume que quedo sin subir, para
+        # que la degradacion parcial no pase desapercibida.
+        _fallidos = []
         for fn, contenido in limpios.items():
-            upload_to_github(fn, contenido)
+            try:
+                upload_to_github(fn, contenido)
+            except Exception as _eu:
+                _traza(f'subida/{fn}', _eu)
+                _fallidos.append(fn)
+        if _fallidos:
+            print(f'  🔴 SUBIDA INCOMPLETA: {len(_fallidos)} de {len(limpios)} ficheros NO se '
+                  f'subieron ({", ".join(sorted(_fallidos))}). El repo queda en estado MIXTO: '
+                  'unos ficheros son de esta ejecucion y otros de la anterior. Si el error es '
+                  '401, el token de GitHub ha caducado o ha sido revocado.')
 
 def update_history(all_groups, all_values=None):
     today=datetime.now(madrid).strftime('%Y-%m-%d')
