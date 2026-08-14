@@ -2303,16 +2303,35 @@ def construir_entradas_alertas(evaluaciones, fecha_panel):
 def merge_alertas(ah, entradas, evaluaciones, fecha_panel, max_entradas=MAX_ALERTAS_ENTRADAS):
     """Conserva la PRIMERA emision y actualiza el seguimiento de las ya registradas.
 
-    Tres campos de seguimiento sobre cada entrada existente:
+    Campos de seguimiento sobre cada entrada existente:
       ret_pct_ultimo / fecha_ultimo -> como va el setup ahora
-      desenlace                     -> 'stop' | 'objetivo' | None (sigue abierto)
+      desenlace -> 'stop' | 'objetivo' | 'remitida' | None (sigue alertando)
+
     El dedupe es por (fecha_setup, ticker, tipo): una segunda alerta de CMF sobre el mismo
     setup no crea fila nueva, actualiza la que hay. Si el mismo ticker vuelve a dar setup
     otro dia, fecha_setup difiere y si es una alerta distinta.
+
+    P72 (14/08/2026) — DESENLACE 'remitida'. El P68 solo cerraba una alerta con stop u
+    objetivo, asi que una alerta que deja de emitirse porque la señal se recupero quedaba
+    "sin desenlace" para siempre. Caso real: SPGI, seis sesiones de CMF negativo con
+    +2,9%, el flujo vuelve a positivo y desaparece de la lista sin dejar rastro.
+
+    Ese es JUSTO el contrafactual que hace falta. Sin el, la serie solo contendria alertas
+    que acabaron mal y responderia que reducir al 50% siempre acierta — por construccion,
+    no por evidencia. Con 'remitida' y su ret_pct_remitida se puede comparar lo que paso
+    tras las que se materializaron y tras las que no.
+
+    Solo se marca si el setup SIGUE evaluandose (ev presente): si no, no se distingue
+    "la señal se recupero" de "el setup salio de la ventana de 30 dias".
+
+    Una alerta remitida que vuelve a emitirse NO crea fila nueva (misma clave): se limpia
+    el desenlace y se cuenta en reemisiones. La primera emision y su ret siguen intactos,
+    porque es el momento en que se habria actuado.
     """
     ah = [e for e in (ah or []) if isinstance(e, dict)]
     estado = {(e.get('fecha_setup'), e.get('ticker')): e for e in (evaluaciones or [])}
     indice = {(e.get('fecha_setup'), e.get('ticker'), e.get('tipo')): e for e in ah}
+    activas_hoy = {(e.get('fecha_setup'), e.get('ticker'), e.get('tipo')) for e in (entradas or [])}
     for entrada in (entradas or []):
         clave = (entrada.get('fecha_setup'), entrada.get('ticker'), entrada.get('tipo'))
         if clave not in indice:
@@ -2320,20 +2339,33 @@ def merge_alertas(ah, entradas, evaluaciones, fecha_panel, max_entradas=MAX_ALER
             ah.append(entrada)
     # Seguimiento: se recorre TODO el historico, no solo lo alertado hoy — el desenlace
     # de una alerta de hace dos semanas es justo lo que se quiere capturar.
-    nuevas_resueltas = 0
+    nuevas_resueltas = nuevas_remitidas = 0
     for e in ah:
         ev = estado.get((e.get('fecha_setup'), e.get('ticker')))
         if not ev:
             continue  # fuera de la ventana de 30 dias: se queda como estaba
         e['ret_pct_ultimo'] = ev.get('ret_pct')
         e['fecha_ultimo'] = fecha_panel
+        clave = (e.get('fecha_setup'), e.get('ticker'), e.get('tipo'))
         res = ev.get('resultado')
-        if res in ('stop', 'objetivo') and not e.get('desenlace'):
+        if res in ('stop', 'objetivo') and e.get('desenlace') != res:
+            # stop/objetivo mandan sobre 'remitida': la señal se recupero pero el setup
+            # acabo resolviendose igual, y eso es lo que interesa saber.
             e['desenlace'] = res
             e['fecha_desenlace'] = fecha_panel
             nuevas_resueltas += 1
+        elif clave in activas_hoy:
+            if e.get('desenlace') == 'remitida':
+                e['desenlace'] = None          # volvio a alertar: se reabre
+                e['fecha_desenlace'] = None
+                e['reemisiones'] = int(e.get('reemisiones') or 0) + 1
+        elif not e.get('desenlace') and e.get('fecha_alerta') != fecha_panel:
+            e['desenlace'] = 'remitida'
+            e['fecha_desenlace'] = fecha_panel
+            e['ret_pct_remitida'] = ev.get('ret_pct')
+            nuevas_remitidas += 1
     ah.sort(key=lambda e: (e.get('fecha_alerta') or '', e.get('ticker') or '', e.get('tipo') or ''))
-    return ah[-max_entradas:], nuevas_resueltas
+    return ah[-max_entradas:], nuevas_resueltas, nuevas_remitidas
 
 def actualizar_alertas_history(evaluaciones, macro, ts):
     """Persiste el historico de alertas. Solo en cierre (ver cabecera)."""
@@ -2351,11 +2383,13 @@ def actualizar_alertas_history(evaluaciones, macro, ts):
     if not isinstance(ah, list):
         ah = []
     previas = len(ah)
-    fusionado, resueltas = merge_alertas(
+    fusionado, resueltas, remitidas = merge_alertas(
         ah, construir_entradas_alertas(evaluaciones, fecha_panel), evaluaciones, fecha_panel)
     _abiertas = sum(1 for e in fusionado if not e.get('desenlace'))
+    _rem = sum(1 for e in fusionado if e.get('desenlace') == 'remitida')
     print(f'  Alertas persistidas: {len(fusionado) - previas} nuevas | {resueltas} resueltas hoy | '
-          f'total acumulado: {len(fusionado)} ({_abiertas} sin desenlace)')
+          f'{remitidas} remitidas hoy | total acumulado: {len(fusionado)} '
+          f'({_abiertas} alertando, {_rem} remitidas)')
     return fusionado
 
 # ============================================================
