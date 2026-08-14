@@ -2208,6 +2208,106 @@ def actualizar_resoluciones_history(evaluaciones, macro, ts):
     return fusionado
 
 # ============================================================
+# ALERTAS — HISTORICO PERMANENTE Y DESENLACE (PUNTO 68, 13/08/2026)
+# Los setups tienen checkpoints (P39) y resoluciones (P43): se sabe que paso con ellos.
+# Las ALERTAS no tenian nada. Se emiten cada noche —"Supertrend bajista, salida total",
+# "CMF negativo 3+ sesiones, considerar reducir al 50%"— y desaparecen del informe
+# siguiente sin dejar rastro de si acertaron.
+#
+# El 13/08 XYL toco stop a -6,0% tras ocho sesiones en la lista de alertas blandas de CMF.
+# Es el primer caso conocido de alerta blanda que se materializa, y se supo por casualidad,
+# comparando dos informes a mano. Sin serie no se puede responder a la pregunta que
+# importa: ¿reducir al 50% cuando el CMF lleva 3 sesiones negativo mejora el resultado, o
+# solo corta ganadoras antes de tiempo? AMZN lleva siete sesiones alertada y sigue en
+# +13,0% — el mismo aviso puede ser prudencia o coste de oportunidad, y hoy no hay forma
+# de distinguirlo.
+#
+# Se registra la PRIMERA emision de cada alerta (clave (fecha_setup, ticker, tipo)) con el
+# retorno de ese momento, y en cada ejecucion posterior se actualiza el retorno mas
+# reciente y el desenlace si el setup se resolvio. La primera emision es inmutable: es el
+# momento en que se habria actuado. Lo que evoluciona es el seguimiento.
+#
+# Mismo criterio que el P39: solo en cierre. Una alerta vista a media sesion con precios
+# intradia no es el dato sobre el que se decide.
+# ============================================================
+
+MAX_ALERTAS_ENTRADAS = 5000
+
+def construir_entradas_alertas(evaluaciones, fecha_panel):
+    """Una entrada por alerta ACTIVA hoy. Sin dedupe por ticker: aqui interesan todas."""
+    entradas = []
+    for e in (evaluaciones or []):
+        base = {'fecha_setup': e.get('fecha_setup'), 'ticker': e.get('ticker'),
+                'fecha_alerta': fecha_panel, 'ret_pct_alerta': e.get('ret_pct')}
+        if e.get('alerta_supertrend'):
+            entradas.append({**base, 'tipo': 'supertrend',
+                             'dias_senal': e.get('supertrend_dias'),
+                             'nivel': e.get('supertrend_nivel')})
+        if e.get('alerta_cmf'):
+            entradas.append({**base, 'tipo': 'cmf',
+                             'dias_senal': e.get('cmf_dias_negativo'),
+                             'nivel': e.get('cmf_actual')})
+    return entradas
+
+def merge_alertas(ah, entradas, evaluaciones, fecha_panel, max_entradas=MAX_ALERTAS_ENTRADAS):
+    """Conserva la PRIMERA emision y actualiza el seguimiento de las ya registradas.
+
+    Tres campos de seguimiento sobre cada entrada existente:
+      ret_pct_ultimo / fecha_ultimo -> como va el setup ahora
+      desenlace                     -> 'stop' | 'objetivo' | None (sigue abierto)
+    El dedupe es por (fecha_setup, ticker, tipo): una segunda alerta de CMF sobre el mismo
+    setup no crea fila nueva, actualiza la que hay. Si el mismo ticker vuelve a dar setup
+    otro dia, fecha_setup difiere y si es una alerta distinta.
+    """
+    ah = [e for e in (ah or []) if isinstance(e, dict)]
+    estado = {(e.get('fecha_setup'), e.get('ticker')): e for e in (evaluaciones or [])}
+    indice = {(e.get('fecha_setup'), e.get('ticker'), e.get('tipo')): e for e in ah}
+    for entrada in (entradas or []):
+        clave = (entrada.get('fecha_setup'), entrada.get('ticker'), entrada.get('tipo'))
+        if clave not in indice:
+            indice[clave] = entrada
+            ah.append(entrada)
+    # Seguimiento: se recorre TODO el historico, no solo lo alertado hoy — el desenlace
+    # de una alerta de hace dos semanas es justo lo que se quiere capturar.
+    nuevas_resueltas = 0
+    for e in ah:
+        ev = estado.get((e.get('fecha_setup'), e.get('ticker')))
+        if not ev:
+            continue  # fuera de la ventana de 30 dias: se queda como estaba
+        e['ret_pct_ultimo'] = ev.get('ret_pct')
+        e['fecha_ultimo'] = fecha_panel
+        res = ev.get('resultado')
+        if res in ('stop', 'objetivo') and not e.get('desenlace'):
+            e['desenlace'] = res
+            e['fecha_desenlace'] = fecha_panel
+            nuevas_resueltas += 1
+    ah.sort(key=lambda e: (e.get('fecha_alerta') or '', e.get('ticker') or '', e.get('tipo') or ''))
+    return ah[-max_entradas:], nuevas_resueltas
+
+def actualizar_alertas_history(evaluaciones, macro, ts):
+    """Persiste el historico de alertas. Solo en cierre (ver cabecera)."""
+    if not evaluaciones:
+        return None
+    base = construir_entrada_breadth({}, macro, ts)
+    fecha_panel, es_cierre = base.get('fecha'), base.get('es_cierre')
+    if not es_cierre:
+        print('  Alertas OMITIDAS: sesion en curso (dato provisional).')
+        return None
+    ah, _ = get_github_file('alertas_history.json')
+    if ah == '__ERROR__':
+        print('  🔴 alertas_history OMITIDO (fallo de lectura de GitHub) — fichero intacto')
+        return None
+    if not isinstance(ah, list):
+        ah = []
+    previas = len(ah)
+    fusionado, resueltas = merge_alertas(
+        ah, construir_entradas_alertas(evaluaciones, fecha_panel), evaluaciones, fecha_panel)
+    _abiertas = sum(1 for e in fusionado if not e.get('desenlace'))
+    print(f'  Alertas persistidas: {len(fusionado) - previas} nuevas | {resueltas} resueltas hoy | '
+          f'total acumulado: {len(fusionado)} ({_abiertas} sin desenlace)')
+    return fusionado
+
+# ============================================================
 # CHECKPOINTS DE SETUPS — HISTORICO PERMANENTE (PUNTO 39, 04/08/2026)
 # Las evaluaciones de update_setups_history se RECALCULAN cada noche desde
 # setups_history + precios actuales, y solo para setups dentro de la ventana de 30
@@ -4514,6 +4614,10 @@ def main():
     putcall_history = actualizar_putcall_history(putcall, macro, ts)
     if putcall_history is not None:
         ficheros_subida['putcall_history.json'] = json.dumps(clean_nan(putcall_history), ensure_ascii=False)
+    # PUNTO 68 — historico de alertas con su desenlace.
+    alertas_history = actualizar_alertas_history(evaluaciones, macro, ts)
+    if alertas_history is not None:
+        ficheros_subida['alertas_history.json'] = json.dumps(clean_nan(alertas_history), ensure_ascii=False)
     # P57 — serie diaria de spy_health score continuo, en el mismo commit unico.
     try:
         _spy_close_val = float(bs.iloc[-1]) if bs is not None and len(bs) > 0 else None
