@@ -58,6 +58,7 @@ ORQUESTACION = {
     'actualizar_putcall_history',
     'actualizar_spy_health_history',
     'actualizar_alertas_history',
+    'actualizar_setups_registro',
 }
 
 # Llamadas donde los ARGUMENTOS deben coincidir. Es la comprobacion que habria
@@ -72,6 +73,7 @@ ARGS_CRITICOS = {
     'actualizar_putcall_history',
     'actualizar_spy_health_history',
     'actualizar_alertas_history',
+    'actualizar_setups_registro',
 }
 
 # Diferencias intencionadas: main() envuelve en clean_nan antes de serializar,
@@ -253,7 +255,8 @@ def test_cobertura_de_la_lista_de_orquestacion():
                   'construir_entradas_resoluciones', 'merge_resoluciones', '_dias_habiles_entre',
                   'get_putcall_cboe', 'construir_entrada_putcall', 'merge_putcall',
                   'data_json_publicable',
-                  'construir_entradas_alertas', 'merge_alertas'}
+                  'construir_entradas_alertas', 'merge_alertas',
+                  'construir_entradas_registro', 'merge_registro_setups'}
     sin_vigilar = llamadas_main - ORQUESTACION - auxiliares
     assert not sin_vigilar, (
         'Funciones nuevas llamadas en main() y no vigiladas por este test: %s. '
