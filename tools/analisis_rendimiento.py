@@ -234,6 +234,79 @@ def seccion_vs_spy(checkpoints, spy):
         print()
 
 
+def retorno_operado(chk, indice_res):
+    """P74 (16/08/2026) — retorno del checkpoint SI SE HUBIERA RESPETADO EL STOP.
+
+    El ret_pct del checkpoint es marcaje a mercado de una posicion que nunca se cerro: el
+    campo `resultado` del scanner se recalcula cada dia contra el precio de ESE dia, asi
+    que un setup que perforo el stop el dia 6 y rebroto figura el dia 20 como abierto y en
+    positivo. Comparar eso con el SPY responde a "¿y si aguanto pase lo que pase?", no a
+    "¿que rinde mi sistema?".
+
+    Aqui se cruza con resoluciones_history.json, que SI guarda a cuantos dias se resolvio
+    cada setup. Si la resolucion ocurrio ANTES del horizonte del checkpoint, la posicion ya
+    estaba cerrada: el retorno que cuenta es el del cierre. Si no, vale el del checkpoint.
+
+    Devuelve (retorno, cerrado) para poder medir cuantos checkpoints estan afectados.
+    """
+    res = indice_res.get((chk.get('fecha_setup'), chk.get('ticker')))
+    if not res:
+        return chk.get('ret_pct'), False
+    dias_res, dias_chk = res.get('dias'), chk.get('dias')
+    if not isinstance(dias_res, (int, float)) or not isinstance(dias_chk, (int, float)):
+        return chk.get('ret_pct'), False
+    if dias_res <= dias_chk:
+        return res.get('ret_pct'), True     # ya estaba cerrada al llegar al horizonte
+    return chk.get('ret_pct'), False
+
+
+def seccion_operado(checkpoints, resoluciones, spy):
+    print()
+    print(SEP)
+    print('2b. EL SISTEMA TAL Y COMO SE OPERA — con los stops respetados')
+    print(SEP)
+    print('  Misma comparacion que arriba, pero sustituyendo el marcaje a mercado por el')
+    print('  retorno del CIERRE en los setups que ya se habian resuelto a ese horizonte.')
+    print('  Esta es la seccion que responde a la pregunta real; la 2 responde a "¿y si')
+    print('  hubiera aguantado ignorando mis propios stops?". La diferencia entre ambas es')
+    print('  el coste (o el beneficio) de la gestion de stops.')
+    print()
+    if not resoluciones:
+        print('  Sin resoluciones: no se puede reconstruir el sistema operado.')
+        return
+    indice = {}
+    for r in resoluciones:
+        clave = (r.get('fecha_setup'), r.get('ticker'))
+        # Si hubiera varias, se conserva la mas temprana: es la que habria cerrado antes.
+        if clave not in indice or (r.get('dias') or 999) < (indice[clave].get('dias') or 999):
+            indice[clave] = r
+    for dias in HORIZONTES:
+        grupo = [c for c in checkpoints if c.get('dias') == dias]
+        if not grupo:
+            continue
+        rets, cerrados, excesos = [], 0, []
+        for c in grupo:
+            r, cerrado = retorno_operado(c, indice)
+            rets.append(r)
+            cerrados += 1 if cerrado else 0
+            r_spy = spy_retorno(spy, c.get('fecha_setup'), dias) if spy else None
+            if r_spy is not None and isinstance(r, (int, float)):
+                excesos.append(r - r_spy)
+        n, media, mediana, pct = resumen(rets)
+        print(f'  {dias:>2} sesiones  n={n}   (cerrados antes del horizonte: {cerrados}, '
+              f'{100.0*cerrados/len(grupo):.0f}%)')
+        print(f'     Operado    media {fmt(media)}%   mediana {fmt(mediana)}%   positivos {pct:5.1f}%')
+        n_e, media_e, mediana_e, pct_e = resumen(excesos)
+        if n_e:
+            print(f'     EXCESO     media {fmt(media_e)}%   mediana {fmt(mediana_e)}%   '
+                  f'baten al indice {pct_e:5.1f}%')
+        # Contraste directo con la version sin stops
+        n_b, media_b, _, _ = resumen([c.get('ret_pct') for c in grupo])
+        if media is not None and media_b is not None:
+            print(f'     COSTE DE LOS STOPS: {fmt(media - media_b)}% frente a aguantar '
+                  f'({fmt(media_b)}% sin stops)')
+        print()
+
 def seccion_stops(checkpoints, resoluciones):
     print(SEP)
     print('3. ¿SALTAN LOS STOPS DEMASIADO PRONTO?')
@@ -422,6 +495,7 @@ def main():
             print(f'  SPY: {len(spy)} sesiones descargadas.')
 
     seccion_vs_spy(checkpoints, spy)
+    seccion_operado(checkpoints, resoluciones, spy)
     seccion_stops(checkpoints, resoluciones)
     seccion_segmentos(checkpoints, setups_hist)
     seccion_resoluciones(resoluciones)
