@@ -3949,6 +3949,87 @@ def dedup_alertas_por_ticker(alertas):
             por_ticker[tk] = a
     return sorted(por_ticker.values(), key=lambda x: str(x.get('fecha_setup', '')))
 
+# ============================================================
+# REGISTRO PERMANENTE DE SETUPS (PUNTO 75, 16/08/2026)
+# El analisis de rendimiento del 16/08 choco con un muro: no existe ningun registro
+# completo de los setups creados. setups_history.json es una VENTANA MOVIL de 30 dias y
+# checkpoints_history.json solo guarda tres fotos (dias 5/10/20) y solo desde el 04/08.
+# Consecuencia medida: 16 de los 46 stops no tienen NINGUN checkpoint, y las dos vistas
+# del rendimiento —+6,7% a 20 sesiones frente a una esperanza de -3,8% por operacion—
+# describen conjuntos que apenas se solapan, asi que no son reconciliables.
+#
+# Este fichero cierra ese hueco: UNA fila por setup creado, para siempre. Con el se puede
+# calcular la cohorte COMPLETA (todos los setups de una fecha, resueltos o no) en vez de
+# la muestra que sobrevivio a dos ventanas moviles.
+#
+# INMUTABLE: el dedupe conserva la entrada existente. Lo que se guarda son las condiciones
+# EN EL MOMENTO DE CREAR el setup, y esas no cambian nunca. Reejecutar no reescribe.
+#
+# Solo en CIERRE, por la leccion del P39: una ejecucion intradia congelaria niveles de
+# entrada calculados con precios parciales, y al ser inmutable no habria forma de corregirlo.
+#
+# Guarda ademas sct y ranking, que los checkpoints NO llevan y por eso hoy no se puede
+# segmentar el rendimiento por calidad tecnica ni por posicion en el ranking.
+# ============================================================
+
+MAX_REGISTRO_SETUPS = 20000
+
+def construir_entradas_registro(setups_hoy, valores, fecha):
+    """Una fila por setup creado hoy, con su contexto completo al crearse."""
+    por_ticker = {v.get('ticker'): v for v in (valores or []) if v.get('ticker')}
+    salida = []
+    for s in (setups_hoy or []):
+        v = por_ticker.get(s.get('ticker')) or {}
+        salida.append({
+            'fecha_setup': fecha, 'ticker': s.get('ticker'), 'group': s.get('group'),
+            'tipo': s.get('tipo'), 'entry_lo': s.get('entry_lo'), 'entry_hi': s.get('entry_hi'),
+            'stop': s.get('stop'), 'target': s.get('target'), 'rr': s.get('rr'),
+            'riesgo': s.get('riesgo'), 'score': s.get('score'), 'rs_4w': s.get('rs_4w'),
+            'rsi_al_crear': s.get('rsi_al_crear'),
+            'supertrend_al_crear': s.get('supertrend_al_crear'),
+            'dispersion_al_crear': s.get('dispersion_al_crear'),
+            # NO estan en setups_history y son justo las dos dimensiones que faltaban:
+            'sct': v.get('sct'), 'ranking': v.get('ranking'),
+            'cmf_al_crear': v.get('cmf'), 'adx_al_crear': v.get('adx'),
+        })
+    return salida
+
+def merge_registro_setups(reg, entradas, max_entradas=MAX_REGISTRO_SETUPS):
+    """Dedupe por (fecha_setup, ticker) CONSERVANDO lo existente: es un registro de
+    creacion, y las condiciones de creacion no se reescriben."""
+    reg = [e for e in (reg or []) if isinstance(e, dict)]
+    vistos = {(e.get('fecha_setup'), e.get('ticker')) for e in reg}
+    nuevas = 0
+    for entrada in (entradas or []):
+        clave = (entrada.get('fecha_setup'), entrada.get('ticker'))
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        reg.append(entrada)
+        nuevas += 1
+    reg.sort(key=lambda e: (e.get('fecha_setup') or '', e.get('ticker') or ''))
+    return reg[-max_entradas:], nuevas
+
+def actualizar_setups_registro(setups_hoy, valores, macro, ts):
+    """Persiste el registro permanente. Solo en cierre (ver cabecera)."""
+    if not setups_hoy:
+        return None
+    base = construir_entrada_breadth({}, macro, ts)
+    fecha, es_cierre = base.get('fecha'), base.get('es_cierre')
+    if not es_cierre:
+        print('  Registro de setups OMITIDO: sesion en curso (los niveles serian parciales).')
+        return None
+    reg, _ = get_github_file('setups_registro.json')
+    if reg == '__ERROR__':
+        print('  🔴 setups_registro OMITIDO (fallo de lectura de GitHub) — fichero intacto')
+        return None
+    if not isinstance(reg, list):
+        reg = []
+    fusionado, nuevas = merge_registro_setups(
+        reg, construir_entradas_registro(setups_hoy, valores, fecha))
+    print(f'  Registro de setups: {nuevas} nuevos | total acumulado: {len(fusionado)}')
+    return fusionado
+
 def update_setups_history(values, all_groups):
     today = datetime.now(madrid).strftime('%Y-%m-%d')
     history, _ = get_github_file('setups_history.json')
@@ -4820,6 +4901,12 @@ def main():
     alertas_history = actualizar_alertas_history(evaluaciones, macro, ts)
     if alertas_history is not None:
         ficheros_subida['alertas_history.json'] = json.dumps(clean_nan(alertas_history), ensure_ascii=False)
+    # PUNTO 75 — registro permanente de setups: una fila por setup creado, para siempre.
+    # setups_history[-1] es la entrada de HOY (update_setups_history la añade al final).
+    _setups_hoy = (setups_history[-1].get('setups') if setups_history else None) or []
+    setups_registro = actualizar_setups_registro(_setups_hoy, values_sorted, macro, ts)
+    if setups_registro is not None:
+        ficheros_subida['setups_registro.json'] = json.dumps(clean_nan(setups_registro), ensure_ascii=False)
     # P57 — serie diaria de spy_health score continuo, en el mismo commit unico.
     try:
         _spy_close_val = float(bs.iloc[-1]) if bs is not None and len(bs) > 0 else None
