@@ -189,6 +189,20 @@ def seccion_vs_spy(checkpoints, spy):
     print('  El SPY se mide en la MISMA ventana natural desde la fecha del setup.')
     print('  "Exceso" = retorno del setup menos retorno del indice en ese tramo.')
     print()
+    print('  ⚠ QUE MIDE ESTO EXACTAMENTE (leer antes de interpretar):')
+    print('    El campo resultado se recalcula cada dia contra el precio de ESE dia')
+    print('    (stop_tocado = precio_actual <= stop), no es un estado que se congele.')
+    print('    Un setup que perforo el stop y luego se recupero figura como abierto y con')
+    print('    retorno positivo. Por tanto estas cifras miden COMPRAR Y AGUANTAR N sesiones')
+    print('    IGNORANDO los stops — no el sistema tal y como se opera. Para el rendimiento')
+    print('    real con stops, la seccion 5 es la referencia, con su propio sesgo.')
+    print()
+    print('  ⚠ LOS TRES HORIZONTES NO SON LA MISMA MUESTRA: cada uno contiene setups')
+    print('    distintos, creados en fechas distintas y medidos sobre ventanas de mercado')
+    print('    distintas. La progresion entre 5, 10 y 20 sesiones NO es la evolucion de una')
+    print('    cartera: es una comparacion entre cohortes. No leerla como "mejora con el')
+    print('    tiempo" sin comprobar antes que las fechas de setup son comparables.')
+    print()
     hay_spy = bool(spy)
     for dias in HORIZONTES:
         grupo = [c for c in checkpoints if c.get('dias') == dias]
@@ -257,6 +271,10 @@ def seccion_stops(checkpoints, resoluciones):
         print(f'  Nunca en verde:                     {rojos} ({100.0*rojos/total:.1f}%)')
         n_m, media_m, mediana_m, _ = resumen(mejores)
         print(f'  Mejor retorno alcanzado (media):    {fmt(media_m)}%   mediana {fmt(mediana_m)}%')
+        print()
+        print('  NOTA: solo se ven aqui los setups cuyo checkpoint coincidio con un dia en')
+        print('  que el precio estaba bajo el stop. Los que perforaron y se recuperaron entre')
+        print('  checkpoints no aparecen, asi que este recuento INFRAESTIMA los stops tocados.')
         print()
         print('  LECTURA: un porcentaje alto de "estuvieron en verde" con mejores retornos')
         print('  apreciables apunta a stop ajustado o a falta de gestion parcial, no a mala')
@@ -349,7 +367,7 @@ def seccion_resoluciones(resoluciones):
         print('  Sin resoluciones registradas.')
         return
     stops = [r.get('ret_pct') for r in resoluciones if r.get('resultado') == 'stop']
-    objetivos = [r.get('ret_pct') for r in resoluciones if r.get('resultado') == 'objetivo']
+    objetivos = [r.get('ret_pct') for r in resoluciones if r.get('resultado') == 'target']
     todos = [r.get('ret_pct') for r in resoluciones
              if isinstance(r.get('ret_pct'), (int, float))]
     print(linea_segmento('Stops', stops))
