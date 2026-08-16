@@ -532,7 +532,15 @@ def _calc_macro_regimen():
     if reg:
         alertas = [k for k, v in reg.items() if v.get('alerta')]
         partes = []
-        if 'us30y' in reg: partes.append(f"US30Y {reg['us30y']['nivel']}% ({reg['us30y']['chg_20s_pb']:+} pb/20s)")
+        if 'us30y' in reg:
+            # ARREGLO (16/08/2026): el P73 permitio que chg_20s_pb sea None (nivel disponible
+            # pero sin 20 sesiones ni descargadas ni en el historico) y este formato lo
+            # reventaba con TypeError, tumbando el bloque macro ENTERO — el 16/08 desaparecio
+            # el regimen del log y rates_history se quedo sin subir. Un dato que falta debe
+            # degradar su propia linea, nunca llevarse el bloque por delante.
+            _v30 = reg['us30y'].get('chg_20s_pb')
+            _t30 = f'{_v30:+} pb/20s' if isinstance(_v30, (int, float)) else 'sin variacion 20s'
+            partes.append(f"US30Y {reg['us30y']['nivel']}% ({_t30})")
         if 'wti' in reg: partes.append(f"WTI ${reg['wti']['nivel']} ({reg['wti']['chg_20s_pct']:+}%/20s)")
         if 'credito_hyg_ief' in reg: partes.append(f"HYG/IEF {reg['credito_hyg_ief']['chg_20s_pct']:+}%/20s")
         if 'btc' in reg:
@@ -3137,8 +3145,13 @@ def bloque_macro(data):
         # Regimen y taktica del dia pueden divergir: Claude debe ver ambos.
         if u30.get('alerta'):
             extra = ' [ha cruzado el nivel del 5.00%]' if u30.get('cruce_5pct') else ''
+            # ARREGLO (16/08/2026): la alerta puede dispararse solo por el cruce del 5%,
+            # con chg_20s_pb a None desde el P73. Sin esta guarda el formato reventaria
+            # justo en la ejecucion mas informativa: aquella en la que hay alerta.
+            _v = u30.get('chg_20s_pb')
+            _t = f'{_v:+} pb en 20 sesiones' if isinstance(_v, (int, float)) else 'variacion 20s no disponible'
             macro_txt += (f'- ALERTA DE REGIMEN — US30Y (bono 30 años): {u30.get("nivel")}% | '
-                          f'{u30.get("chg_20s_pb"):+} pb en 20 sesiones | '
+                          f'{_t} | '
                           f'{u30.get("chg_1d_pb"):+} pb hoy{extra}\n')
         wti_r = reg.get('wti', {})
         if wti_r.get('alerta'):
@@ -4221,7 +4234,13 @@ def _nivel_hace_n_sesiones(clave, n=20):
                 rh = []
         except Exception as _e:
             _traza('rates/historico-variacion', _e); rh = []
-        cierres = [e for e in rh if isinstance(e, dict) and e.get('es_cierre') and e.get('fecha')]
+            # ARREGLO (16/08/2026): las 120 sesiones sembradas el 01/08 con instrumentar_tipos.py
+        # NO llevan el campo es_cierre, asi que exigirlo las descartaba todas y dejaba menos
+        # de 20 entradas utiles: el rescate del P73 no llegaba a activarse nunca. Un dato
+        # historico sembrado ES un cierre por construccion, de modo que la ausencia del campo
+        # se trata como cierre y solo se excluye lo marcado explicitamente como provisional.
+        cierres = [e for e in rh if isinstance(e, dict) and e.get('fecha')
+                   and e.get('es_cierre', True)]
         _RATES_HIST_CACHE['entradas'] = sorted(cierres, key=lambda e: e.get('fecha') or '')
     entradas = _RATES_HIST_CACHE['entradas']
     # La entrada de HOY aun no esta escrita en este punto del pipeline, asi que la ultima
