@@ -2305,7 +2305,7 @@ def merge_alertas(ah, entradas, evaluaciones, fecha_panel, max_entradas=MAX_ALER
 
     Campos de seguimiento sobre cada entrada existente:
       ret_pct_ultimo / fecha_ultimo -> como va el setup ahora
-      desenlace -> 'stop' | 'objetivo' | 'remitida' | None (sigue alertando)
+      desenlace -> 'stop' | 'target' | 'remitida' | None (sigue alertando)
 
     El dedupe es por (fecha_setup, ticker, tipo): una segunda alerta de CMF sobre el mismo
     setup no crea fila nueva, actualiza la que hay. Si el mismo ticker vuelve a dar setup
@@ -2348,8 +2348,13 @@ def merge_alertas(ah, entradas, evaluaciones, fecha_panel, max_entradas=MAX_ALER
         e['fecha_ultimo'] = fecha_panel
         clave = (e.get('fecha_setup'), e.get('ticker'), e.get('tipo'))
         res = ev.get('resultado')
-        if res in ('stop', 'objetivo') and e.get('desenlace') != res:
-            # stop/objetivo mandan sobre 'remitida': la señal se recupero pero el setup
+        # ARREGLO (16/08/2026): la condicion decia ('stop', 'objetivo') y el valor real que
+        # escribe el scanner es 'target' (ver la asignacion en update_setups_history), asi
+        # que un setup que alcanzaba objetivo NUNCA se marcaba resuelto: al dejar de alertar
+        # acababa clasificado como 'remitida', justo el contrario de lo que paso. Lo detecto
+        # tools/analisis_rendimiento.py, que arrastraba el mismo error de nombre.
+        if res in ('stop', 'target') and e.get('desenlace') != res:
+            # stop/target mandan sobre 'remitida': la señal se recupero pero el setup
             # acabo resolviendose igual, y eso es lo que interesa saber.
             e['desenlace'] = res
             e['fecha_desenlace'] = fecha_panel
