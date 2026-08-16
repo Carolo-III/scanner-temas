@@ -398,17 +398,23 @@ def _calc_macro_regimen():
         return s
     reg = {}
     # 1) US30Y — bono a 30 años
-    s30 = _serie('^TYX')
-    if len(s30) >= 21:
+    # P73 — bastan DOS sesiones: el nivel y la variacion diaria solo necesitan eso, y la
+    # variacion a 20 sesiones se toma del historico propio cuando Yahoo no da para tanto.
+    s30 = _serie('^TYX', minimo=2)
+    if len(s30) >= 2:
         vals = s30.values.astype(float)
         if vals[-1] > 20: vals = vals / 10  # Yahoo reporta ^TYX en decimas (50.2 = 5.02%)
         nivel = round(float(vals[-1]), 2)
         chg_1d_pb  = round(float(vals[-1] - vals[-2]) * 100, 1)
-        chg_20s_pb = round(float(vals[-1] - vals[-21]) * 100, 1)
+        if len(vals) >= 21:
+            chg_20s_pb = round(float(vals[-1] - vals[-21]) * 100, 1)
+        else:
+            chg_20s_pb = _variacion_20s_pb('us30y', nivel)   # P73: serie propia
         cruce_5 = bool((vals[-2] < 5.0 <= vals[-1]) or (vals[-2] >= 5.0 > vals[-1]))
         reg['us30y'] = {'nivel': nivel, 'chg_1d_pb': chg_1d_pb, 'chg_20s_pb': chg_20s_pb,
                         'cruce_5pct': cruce_5,
-                        'alerta': bool(abs(chg_20s_pb) >= UMBRAL_30Y_PB or cruce_5)}
+                        'alerta': bool((chg_20s_pb is not None and abs(chg_20s_pb) >= UMBRAL_30Y_PB)
+                                       or cruce_5)}
     # 2) WTI — crudo
     swti = _serie('CL=F')
     if len(swti) >= 21:
@@ -472,7 +478,7 @@ def _calc_macro_regimen():
     # disponible. Ahora el nivel entra con una sola sesion y la variacion se omite si no
     # hay historico suficiente: se degrada el indicador que falta, no el tramo completo.
     curva_niveles, curva_var = {}, {}
-    _sin_variacion = []
+    _sin_variacion, _var_historico = [], []
     for clave, tk in (('us3m', '^IRX'), ('us5y', '^FVX'),
                       ('us10y', '^TNX'), ('us30y', '^TYX')):
         serie = _serie(tk, minimo=1)
@@ -484,7 +490,13 @@ def _calc_macro_regimen():
         if len(vals) >= 21:
             curva_var[clave] = round(float(vals[-1] - vals[-21]) * 100, 1)
         else:
-            _sin_variacion.append(f'{clave}({len(vals)})')
+            # P73 — la serie descargada no da para 20 sesiones: se usa la propia.
+            _desde_hist = _variacion_20s_pb(clave, curva_niveles[clave])
+            if _desde_hist is not None:
+                curva_var[clave] = _desde_hist
+                _var_historico.append(clave)
+            else:
+                _sin_variacion.append(f'{clave}({len(vals)})')
     if curva_niveles:
         _pend = calc_pendientes_curva(curva_niveles)
         reg['curva'] = {'niveles': curva_niveles, 'variacion_20s_pb': curva_var,
@@ -499,9 +511,12 @@ def _calc_macro_regimen():
                   'pero la curva no aparecera en el bloque macro.')
         # P70 — el nivel esta pero la variacion a 20 sesiones no: la pendiente SI se
         # calcula (solo usa niveles), lo que se pierde es la lectura de velocidad.
+        if _var_historico:
+            print('  Curva: variacion a 20 sesiones tomada de rates_history.json (la serie '
+                  'descargada venia corta) en: ' + ', '.join(sorted(_var_historico)))
         if _sin_variacion:
-            print('  AVISO macro: tramos de curva sin variacion a 20 sesiones (historico '
-                  'corto, el nivel si entra): ' + ', '.join(sorted(_sin_variacion)))
+            print('  AVISO macro: tramos de curva sin variacion a 20 sesiones (ni descargada '
+                  'ni en el historico propio): ' + ', '.join(sorted(_sin_variacion)))
     # P69 — el aviso sale SIEMPRE que falte algo, aunque el resto del bloque este bien:
     # una degradacion parcial es justo la que pasa desapercibida.
     if _faltan or _cortas:
@@ -4179,6 +4194,50 @@ def upload_to_github(filename, content):
         # existe para evitar. Un fallo de subida debe INFORMAR, nunca tumbar la ejecucion.
         print(f'  Error {filename}: HTTP {r.status_code} — {_mensaje_error_github(r)}')
         raise RuntimeError(f'subida de {filename} fallida: HTTP {r.status_code}')
+
+_RATES_HIST_CACHE = {}
+
+def _nivel_hace_n_sesiones(clave, n=20):
+    """P73 (16/08/2026) — nivel de un tramo de curva hace n sesiones, leido de la serie PROPIA.
+
+    Yahoo lleva desde el 12/08 recortando el historico que sirve para los simbolos de deuda:
+    empezo con ^TNX en 15 sesiones y el 14/08 ya eran cuatro tramos con ~16. Con menos de 21
+    no se puede calcular la variacion a 20 sesiones, asi que la lectura de VELOCIDAD de la
+    curva desaparecio del informe entera — justo lo que hacia util la serie para el P16.
+
+    Pero ese dato no hace falta pedirselo a Yahoo: rates_history.json guarda el nivel diario
+    de cada tramo desde el 09/02/2026 (sembrado con 120 sesiones el 01/08). La variacion se
+    calcula contra el historico propio y el scanner deja de depender de la ventana que la
+    fuente decida servir cada dia. Mismo principio que el resto de series acumuladas.
+
+    Solo se usan entradas de CIERRE: una provisional intradia falsearia la referencia.
+    El fichero se lee UNA vez por ejecucion y se cachea; si falla, se devuelve None y el
+    llamador degrada como venia haciendo.
+    """
+    if 'entradas' not in _RATES_HIST_CACHE:
+        try:
+            rh, _ = get_github_file('rates_history.json')
+            if rh == '__ERROR__' or not isinstance(rh, list):
+                rh = []
+        except Exception as _e:
+            _traza('rates/historico-variacion', _e); rh = []
+        cierres = [e for e in rh if isinstance(e, dict) and e.get('es_cierre') and e.get('fecha')]
+        _RATES_HIST_CACHE['entradas'] = sorted(cierres, key=lambda e: e.get('fecha') or '')
+    entradas = _RATES_HIST_CACHE['entradas']
+    # La entrada de HOY aun no esta escrita en este punto del pipeline, asi que la ultima
+    # del fichero es la sesion anterior: n sesiones atras desde hoy es el indice -n.
+    if len(entradas) < n:
+        return None
+    niveles = (entradas[-n] or {}).get('niveles') or {}
+    valor = niveles.get(clave)
+    return float(valor) if isinstance(valor, (int, float)) else None
+
+def _variacion_20s_pb(clave, nivel_hoy):
+    """P73 — variacion a 20 sesiones en puntos basicos usando la serie propia. None si no hay."""
+    if not isinstance(nivel_hoy, (int, float)):
+        return None
+    previo = _nivel_hace_n_sesiones(clave, 20)
+    return None if previo is None else round((float(nivel_hoy) - previo) * 100, 1)
 
 def _mensaje_error_github(r):
     """P71 — mensaje de error de la API sin asumir que el cuerpo es JSON.
