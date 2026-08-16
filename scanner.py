@@ -4315,14 +4315,28 @@ def _nivel_hace_n_sesiones(clave, n=20):
                 rh = []
         except Exception as _e:
             _traza('rates/historico-variacion', _e); rh = []
-            # ARREGLO (16/08/2026): las 120 sesiones sembradas el 01/08 con instrumentar_tipos.py
-        # NO llevan el campo es_cierre, asi que exigirlo las descartaba todas y dejaba menos
-        # de 20 entradas utiles: el rescate del P73 no llegaba a activarse nunca. Un dato
-        # historico sembrado ES un cierre por construccion, de modo que la ausencia del campo
-        # se trata como cierre y solo se excluye lo marcado explicitamente como provisional.
-        cierres = [e for e in rh if isinstance(e, dict) and e.get('fecha')
-                   and e.get('es_cierre', True)]
-        _RATES_HIST_CACHE['entradas'] = sorted(cierres, key=lambda e: e.get('fecha') or '')
+            # ARREGLO 2 (16/08/2026, sobre datos comprobados): el primer intento asumio que las
+        # 120 sesiones sembradas con instrumentar_tipos.py NO llevaban el campo es_cierre.
+        # FALSO — lo llevan y vale False, puesto por prudencia del script, aunque son cierres
+        # EOD de Yahoo. Con el filtro anterior quedaban solo las ~11 entradas escritas por el
+        # scanner desde el 01/08, por debajo de las 20 necesarias, y el rescate fallaba casi
+        # siempre.
+        #
+        # Criterio correcto: una entrada provisional solo puede existir para la sesion MAS
+        # RECIENTE (la del panel en curso), porque la nocturna la sustituye por el cierre.
+        # Asi que se ordena todo y se descartan unicamente las provisionales del FINAL; el
+        # resto del historico entra tal cual, venga sembrado o escrito por el scanner.
+        cierres = sorted([e for e in rh if isinstance(e, dict) and e.get('fecha')],
+                         key=lambda e: e.get('fecha') or '')
+        # Se descartan como mucho las 2 ultimas si son provisionales: mas atras no puede
+        # haberlas, y un tope fijo evita que un historico entero marcado False (el caso de
+        # las sembradas) se vacie por completo.
+        for _ in range(2):
+            if cierres and cierres[-1].get('es_cierre') is False:
+                cierres.pop()
+            else:
+                break
+        _RATES_HIST_CACHE['entradas'] = cierres
     entradas = _RATES_HIST_CACHE['entradas']
     # La entrada de HOY aun no esta escrita en este punto del pipeline, asi que la ultima
     # del fichero es la sesion anterior: n sesiones atras desde hoy es el indice -n.
