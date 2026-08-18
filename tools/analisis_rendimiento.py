@@ -92,7 +92,20 @@ def descargar_spy(fecha_min, fecha_max):
         cierres = df['Close']
         if hasattr(cierres, 'columns'):        # yfinance puede devolver MultiIndex
             cierres = cierres.iloc[:, 0]
-        return {d.strftime('%Y-%m-%d'): float(v) for d, v in cierres.items()}
+        # ARREGLO (18/08/2026): yfinance devuelve filas con NaN (fechas futuras dentro del
+        # rango pedido, sesiones incompletas). Un solo NaN contamina la MEDIA de todo el
+        # horizonte —el 18/08 salio "SPY media +nan%" a 5 y 10 sesiones— mientras la
+        # mediana aguantaba, que es justo el tipo de fallo que se lee como dato raro en vez
+        # de como error. Se descartan aqui, en el origen.
+        salida = {}
+        for d, v in cierres.items():
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if fv == fv and fv not in (float('inf'), float('-inf')):   # fv != fv detecta NaN
+                salida[d.strftime('%Y-%m-%d')] = fv
+        return salida
     except Exception as e:
         print(f'  AVISO: no se pudo descargar el SPY ({type(e).__name__}) — se omite la comparacion.')
         return {}
@@ -129,7 +142,8 @@ def spy_retorno(spy, fecha_ini, dias):
 
 def resumen(valores):
     """(n, media, mediana, % positivos) tolerando listas vacias o de un elemento."""
-    vals = [v for v in valores if isinstance(v, (int, float))]
+    vals = [v for v in valores if isinstance(v, (int, float)) and v == v
+            and v not in (float('inf'), float('-inf'))]
     if not vals:
         return 0, None, None, None
     n = len(vals)
