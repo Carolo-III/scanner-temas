@@ -354,6 +354,82 @@ def seccion_stops(checkpoints, resoluciones):
         print('  seleccion. Un porcentaje bajo apunta a que los setups eran malos de origen.')
 
 
+def seccion_stops_protegen(resoluciones, evaluaciones):
+    """P76 (17/08/2026) — ¿el stop ahorro dinero o corto una recuperacion?
+
+    Esta es la comparacion mas limpia que permiten los datos actuales, y no necesita
+    esperar a que se acumule el registro nuevo: para un MISMO setup ya resuelto se
+    contrastan dos cifras que el sistema calcula por caminos distintos.
+
+      ret_pct de resoluciones_history -> CONGELADO. merge_resoluciones deduplica por
+        (fecha_setup, ticker) conservando la entrada existente, asi que es el retorno del
+        dia en que se detecto la resolucion: el precio al que habrias salido.
+      ret_pct de las evaluaciones de data.json -> VIVO. Se recalcula cada dia con el
+        precio actual: donde estaria la posicion si hubieras aguantado.
+
+    La diferencia es el efecto real de haber salido. Negativa = el stop te ahorro esa
+    caida adicional. Positiva = saliste antes de una recuperacion.
+
+    Se hace lo mismo con los objetivos, que responde a la pregunta simetrica y menos
+    obvia: cerrar en objetivo, ¿dejo dinero sobre la mesa?
+
+    LIMITE: solo entran los setups que siguen dentro de la ventana de evaluacion de 30
+    dias. Los de julio ya salieron, asi que la muestra es corta y reciente.
+    """
+    print()
+    print(SEP)
+    print('6. ¿PROTEGIERON LOS STOPS? — salida real frente a aguantar')
+    print(SEP)
+    if not evaluaciones:
+        print('  Sin data.json (o sin evaluaciones dentro): esta seccion necesita el retorno')
+        print('  VIVO de cada setup para contrastarlo con el congelado de la resolucion.')
+        print('  Descarga tambien data.json al directorio de datos y vuelve a ejecutar.')
+        return
+    vivos = {}
+    for e in evaluaciones:
+        clave = (e.get('fecha_setup'), e.get('ticker'))
+        if clave[0] and clave[1] and isinstance(e.get('ret_pct'), (int, float)):
+            vivos[clave] = e['ret_pct']
+
+    for etiqueta, resultado, lectura in (
+            ('STOPS', 'stop', 'Negativo = el stop EVITO esa caida adicional'),
+            ('OBJETIVOS', 'target', 'Positivo = cerrar en objetivo dejo esa subida sin capturar')):
+        casos = []
+        for r in resoluciones:
+            if r.get('resultado') != resultado:
+                continue
+            clave = (r.get('fecha_setup'), r.get('ticker'))
+            congelado, vivo = r.get('ret_pct'), vivos.get(clave)
+            if not isinstance(congelado, (int, float)) or vivo is None:
+                continue
+            casos.append((r.get('ticker'), congelado, vivo, vivo - congelado))
+        print()
+        print(f'  {etiqueta} — {lectura}')
+        if not casos:
+            print('    Ninguno sigue dentro de la ventana de evaluacion de 30 dias.')
+            continue
+        casos.sort(key=lambda c: c[3])
+        for tk, cong, vivo, dif in casos[:12]:
+            print(f'    {tk:6} salida {cong:+6.1f}%   hoy {vivo:+6.1f}%   diferencia {dif:+6.1f}%')
+        if len(casos) > 12:
+            print(f'    ... y {len(casos)-12} mas')
+        difs = [c[3] for c in casos]
+        n, media, mediana, pct_pos = resumen(difs)
+        peor = sum(1 for d in difs if d < 0)
+        print(f'    RESUMEN n={n}   diferencia media {fmt(media)}%   mediana {fmt(mediana)}%')
+        if resultado == 'stop':
+            print(f'    En {peor} de {n} casos ({100.0*peor/n:.0f}%) aguantar habria sido PEOR: '
+                  'el stop protegio.')
+            if media is not None:
+                signo = 'AHORRO' if media < 0 else 'COSTO'
+                print(f'    De media, salir en el stop {signo} {abs(media):.1f} puntos por operacion.')
+        else:
+            print(f'    En {n-peor} de {n} casos ({100.0*(n-peor)/n:.0f}%) el precio siguio subiendo '
+                  'tras el objetivo.')
+    print()
+    print('  ⚠ Muestra corta y reciente por la ventana de 30 dias, y medida en un unico')
+    print('    momento (hoy). Un mercado que rebote manana cambia el signo de varias filas.')
+
 def seccion_segmentos(checkpoints, setups_hist):
     print()
     print(SEP)
@@ -476,6 +552,7 @@ def main():
     checkpoints = cargar(args.dir, 'checkpoints_history.json', [])
     resoluciones = cargar(args.dir, 'resoluciones_history.json', [])
     setups_hist = cargar(args.dir, 'setups_history.json', [])
+    data = cargar(args.dir, 'data.json', {})
     checkpoints = [c for c in checkpoints if isinstance(c, dict)]
     resoluciones = [r for r in resoluciones if isinstance(r, dict)]
     setups_hist = setups_hist if isinstance(setups_hist, list) else []
@@ -499,6 +576,8 @@ def main():
     seccion_stops(checkpoints, resoluciones)
     seccion_segmentos(checkpoints, setups_hist)
     seccion_resoluciones(resoluciones)
+    _evals = (data or {}).get('evaluaciones') if isinstance(data, dict) else None
+    seccion_stops_protegen(resoluciones, _evals or [])
 
     print()
     print(SEP)
