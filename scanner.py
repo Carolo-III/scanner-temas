@@ -3024,24 +3024,38 @@ def rescatar_analisis_anterior(analisis, avisos):
     Solo actua cuando el informe viene VACIO o es demasiado corto. Un informe generado
     pero incompleto (truncado, o al que le falta una seccion) NO se sustituye: es peor
     perder el analisis de hoy que tenerlo a medias.
+
+    Devuelve (analisis, rescatado, no_publicar_data). El tercero es True SOLO cuando el
+    informe viene vacio Y ademas no se ha podido leer el data.json anterior: en ese caso
+    el llamador debe sacar data.json de la subida.
     """
     if analisis and len(analisis.strip()) >= 500:
-        return analisis, False
+        return analisis, False, False
     previo, _ = get_github_file('data.json')
     if previo == '__ERROR__' or not isinstance(previo, dict):
-        print('  🔴 informe vacio y no se pudo leer el anterior de GitHub — se sube vacio')
-        return analisis, False
+        # P78 (20/08/2026): TERCER valor de retorno. Antes se devolvia (analisis, False) y
+        # main subia data.json igualmente CON EL INFORME VACIO, encima del bueno — pese a
+        # que get_github_file ya imprimia "el llamador debe abortar para no machacar datos"
+        # y nadie abortaba. Paso el 20/08: fallo la lectura, se subio vacio y la web perdio
+        # el informe. Si no se pudo LEER el anterior no se sabe que hay al otro lado, asi
+        # que no se pisa: mismo criterio del P65 con la frescura.
+        print('  🔴 informe vacio y NO se pudo leer el anterior — data.json NO se subira '
+              '(no se pisa lo que no se ha podido comprobar)')
+        return analisis, False, True
     anterior = (previo.get('analisis') or '').strip()
     if len(anterior) < 500:
+        # Aqui SI se sube: se ha comprobado que el anterior tampoco valia, asi que no hay
+        # nada que destruir y el resto de data.json (amplitud, setups, seguimiento) si es
+        # bueno y conviene actualizarlo.
         print('  🔴 informe vacio y el anterior tampoco servia — se sube vacio')
-        return analisis, False
+        return analisis, False, False
     sello = previo.get('timestamp', 'ejecucion anterior')
     print(f'  ⚠️  Informe vacio: se CONSERVA el analisis anterior ({sello}) en vez de borrarlo')
     aviso = (f'> **AVISO DEL SISTEMA — informe no actualizado.** La generacion del analisis '
              f'fallo en esta ejecucion, asi que lo que sigue es el informe de {sello}. '
              f'Los datos, setups y seguimiento de la web SI estan actualizados; solo este '
              f'texto es anterior.\n\n')
-    return aviso + anterior, True
+    return aviso + anterior, True, False
 
 def validar_informe(analisis, universo_tickers):
     """PUNTO 36 (01/08/2026) — Validación post-generación del informe.
@@ -3865,8 +3879,24 @@ def generate_analysis(data, anthropic_key):
     import anthropic as ant
     client=ant.Anthropic(api_key=anthropic_key.strip())
     prompt = construir_prompt(data)
-    import httpx
-    msg=client.messages.create(model='claude-opus-4-8',max_tokens=MAX_TOKENS_INFORME,messages=[{'role':'user','content':prompt}], timeout=httpx.Timeout(120.0, connect=30.0))
+    # ARREGLO (20/08/2026): httpx se importaba aqui SOLO para construir el timeout, y el
+    # 20/08 la Action fallo con "No module named 'httpx'" en los tres intentos, dejando el
+    # informe sin generar. La conexion con Anthropic funcionaba ("modelos disponibles: 10"),
+    # asi que el SDK estaba bien: lo que desaparecio fue httpx como modulo importable, muy
+    # probablemente por un cambio de version del SDK que ya no lo arrastra como dependencia
+    # visible. El workflow instala `yfinance pandas requests beautifulsoup4 anthropic pytz`,
+    # sin httpx explicito, asi que dependia de que anthropic lo trajera de rebote.
+    #
+    # Un DETALLE DE CONFIGURACION no puede tumbar la generacion entera: el SDK acepta un
+    # float como timeout, que cubre lo esencial. Se pierde solo el timeout de conexion
+    # diferenciado (30s), y eso se dice en la traza en vez de fallar en silencio.
+    try:
+        import httpx
+        _timeout = httpx.Timeout(120.0, connect=30.0)
+    except Exception as _e:
+        _traza('anthropic/httpx-ausente', _e)
+        _timeout = 120.0
+    msg=client.messages.create(model='claude-opus-4-8',max_tokens=MAX_TOKENS_INFORME,messages=[{'role':'user','content':prompt}], timeout=_timeout)
     texto = next(b.text for b in msg.content if hasattr(b, 'text'))
     if msg.stop_reason == 'max_tokens':
         print(f'  AVISO: el analisis se corto por limite de max_tokens (texto truncado, {len(texto)} caracteres generados). '
@@ -4876,7 +4906,7 @@ def main():
         for av in _avisos:
             print(f'  AVISO informe: {av}')
     # PUNTO 55 — si el informe vino vacio, conservar el anterior en vez de pisarlo.
-    analisis, _rescatado = rescatar_analisis_anterior(analisis, _avisos)
+    analisis, _rescatado, _no_publicar_data = rescatar_analisis_anterior(analisis, _avisos)
     history=update_history(all_groups, all_values=sorted(ar,key=lambda x:x['score'] or 0,reverse=True))
 
     print('\n▸ Generando alertas Telegram...')
@@ -4935,6 +4965,12 @@ def main():
     if not _publicable:
         ficheros_subida.pop('data.json', None)
         print(f'  🔴 {_motivo}')
+    # P78 — tampoco pisarlo con el informe vacio cuando no se ha podido comprobar que hay
+    # al otro lado. El resto de ficheros suben igual: tienen dedupe por fecha.
+    if _no_publicar_data and 'data.json' in ficheros_subida:
+        ficheros_subida.pop('data.json', None)
+        print('  🔴 data.json NO SE SUBE: el informe vino vacio y la lectura del anterior '
+              'fallo, asi que se conserva intacto lo que hubiera en el repo.')
     upload_files_to_github(ficheros_subida)
     print('\n═══════════════════════════════════════')
     print('  TOP 5 TEMAS')
