@@ -1815,7 +1815,7 @@ def formato_eventos_macro_summary(eventos):
 # retrospectivas reconstruidas del historial de git (anotadas como tales).
 # ============================================================
 
-def construir_entrada_breadth(breadth, macro, ts):
+def construir_entrada_breadth(breadth, macro, ts, ahora_ny=None):
     """Una linea de la serie: fecha ISO + metricas de amplitud del dia + VIX.
 
     FECHA = la de la ULTIMA SESION DEL PANEL (dejada en _BREADTH_CACHE por
@@ -1841,18 +1841,47 @@ def construir_entrada_breadth(breadth, macro, ts):
             fecha_iso = str(ts)
     b = breadth or {}
     disp = b.get('dispersion') or {}
-    # PUNTO 29 (21/07/2026) — es_cierre: True si la ejecucion es la nocturna (hora <06:00 en NY
-    # o la fecha de sesion es un dia habil pasado), False si es manual/intradía. Se detecta
-    # comparando la hora del reloj con la fecha de sesion que ya calculo check_frescura_panel:
-    # si la sesion es HOY (dia habil actual) y la hora es >=06:00 en NY = intradía = provisional.
-    try:
-        hora_ny = int(str(ts).split(' ')[1].split(':')[0])
-    except Exception as _e:
-        _traza('amplitud/hora-ny', _e)
-        hora_ny = 12
-    sesion_hoy = (_BREADTH_CACHE.get('ultima_sesion') == str(
-        pd.Timestamp.now(tz='America/New_York').tz_localize(None).normalize().date()))
-    es_cierre = not (sesion_hoy and hora_ny >= 6)
+    # PUNTO 79 (28/08/2026) — es_cierre por hora REAL de Nueva York.
+    #
+    # El P29 leia la hora de `ts`, que es hora de MADRID pese a que la variable se llamaba
+    # `hora_ny`, y marcaba cierre solo si esa hora era <06:00. El comentario asumia que la
+    # nocturna corre "pasada la medianoche (00:0x)", pero el cron disparaba entre las 23:24
+    # y las 23:49 de Madrid: SIEMPRE antes de medianoche. Consecuencia medida el 28/08:
+    # NINGUNA ejecucion programada habia sido nunca un cierre, y los CINCO consumidores que
+    # leen este campo (checkpoints P39, resoluciones, put/call P56, alertas P68 y registro
+    # P75) omitian la escritura toda noche sin ejecucion manual de madrugada —
+    # setups_registro.json tenia 67 filas en solo cuatro fechas.
+    #
+    # Criterio nuevo, independiente del reloj de Madrid y del cron: la sesion del panel esta
+    # CERRADA si es anterior a hoy en Nueva York, o si es la de hoy y ya pasaron las 16:00
+    # ET. Asi el campo describe el mercado, no la hora a la que alguien lanza el proceso, y
+    # no se rompe con el cambio de horario de octubre.
+    #
+    # `ahora_ny` es inyectable para los tests, mismo patron que check_eventos_macro (P51).
+    if ahora_ny is None:
+        try:
+            ahora_ny = pd.Timestamp.now(tz='America/New_York')
+        except Exception as _e:
+            _traza('amplitud/hora-ny', _e)
+            ahora_ny = None
+    # Se evalua la fecha que ESTA ENTRADA va a llevar (fecha_iso), no la del cache: cuando el
+    # cache no esta, el fallback de arriba ya ha calculado la sesion correcta y esa es la que
+    # debe decidir. Solo se acepta si tiene forma de fecha ISO, porque el ultimo fallback
+    # (`str(ts)`) puede devolver cualquier cosa y compararla seria peor que no comparar.
+    _sesion_panel = fecha_iso if (isinstance(fecha_iso, str) and len(fecha_iso) == 10
+                                  and fecha_iso[4] == '-' and fecha_iso[7] == '-') else None
+    if ahora_ny is None or not _sesion_panel:
+        # Sin poder comprobarlo se asume PROVISIONAL: escribir de menos se corrige en la
+        # ejecucion siguiente, pero congelar por error es irreversible (leccion del P39).
+        es_cierre = False
+    else:
+        _hoy_ny = str(pd.Timestamp(ahora_ny).normalize().date())
+        if _sesion_panel < _hoy_ny:
+            es_cierre = True                      # sesion pasada: cerrada con seguridad
+        elif _sesion_panel == _hoy_ny:
+            es_cierre = int(pd.Timestamp(ahora_ny).hour) >= 16   # cierra a las 16:00 ET
+        else:
+            es_cierre = False                     # fecha futura: dato raro, no congelar
     return {
         'fecha': fecha_iso,
         'es_cierre': es_cierre,
