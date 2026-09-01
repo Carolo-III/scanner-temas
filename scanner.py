@@ -4052,7 +4052,34 @@ def get_github_file(filename, reintentos=3):
         try:
             r=requests.get(url,headers={'Authorization':f'token {GITHUB_TOKEN}'},timeout=20)
             if r.status_code==200:
-                return json.loads(base64.b64decode(r.json()['content']).decode('utf-8')),r.json()['sha']
+                _j = r.json()
+                _txt = base64.b64decode(_j.get('content') or '').decode('utf-8')
+                if not _txt.strip():
+                    # P80 (01/09/2026) — LIMITE DE 1 MB DE LA CONTENTS API.
+                    # La Contents API solo devuelve `content` en base64 hasta 1 MB; por
+                    # encima responde 200 con content vacio y encoding 'none'. Decodificar
+                    # eso da cadena vacia y json.loads revienta con JSONDecodeError, que es
+                    # justo lo que se vio el 28/08 y el 01/09 — y SOLO con data.json, porque
+                    # es el unico fichero que ha cruzado el megabyte (1.697.502 bytes).
+                    #
+                    # No era un fallo transitorio de red: era permanente y creciente, y dejaba
+                    # INUTILIZADO el rescate del P55, que necesita leer data.json para saber
+                    # si el informe anterior servia. La guarda del P78 evitaba el destrozo,
+                    # pero el informe se perdia igual cada vez que fallaba la generacion.
+                    #
+                    # La Blobs API no tiene ese limite (hasta 100 MB) y acepta el mismo token.
+                    _sha = _j.get('sha')
+                    if _sha:
+                        rb = requests.get(
+                            f'https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/git/blobs/{_sha}',
+                            headers={'Authorization': f'token {GITHUB_TOKEN}',
+                                     'Accept': 'application/vnd.github.raw+json'}, timeout=40)
+                        if rb.status_code == 200:
+                            print(f'  {filename} leido por la Blobs API (supera 1 MB, la Contents API no lo sirve)')
+                            return json.loads(rb.text), _sha
+                        print(f'  ⚠️ Blobs API fallo para {filename} (HTTP {rb.status_code})')
+                    raise ValueError(f'{filename}: contenido vacio en la Contents API y sin blob utilizable')
+                return json.loads(_txt), _j['sha']
             if r.status_code==404:
                 return None,None  # el fichero genuinamente no existe: empezar de cero es correcto
             print(f'  ⚠️ Lectura de {filename} fallo (HTTP {r.status_code}) — intento {intento+1}/{reintentos}')
