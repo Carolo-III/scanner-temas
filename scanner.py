@@ -361,6 +361,73 @@ def calc_pendientes_curva(niveles):
 
 UMBRAL_BTC_FINDE_PCT = 5.0   # P34: caida de fin de semana que dispara aviso de riesgo-off
 
+# P77 (01/09/2026) — DISPARADOR DE NIVEL, ademas del de velocidad.
+#
+# Las alertas de regimen (P7) miden VELOCIDAD: |cambio| a 20 sesiones contra un umbral. Eso
+# detecta movimientos bruscos pero es CIEGO a los niveles extremos alcanzados despacio, y el
+# efecto es perverso: cuanto mas tiempo lleva una serie arriba, MENOS probable es la alerta,
+# porque la referencia de hace 20 sesiones tambien esta alta.
+#
+# Casos medidos: el 18/08 el US30Y marco maximo de 19 anos y el bloque decia "sin alertas de
+# regimen" (la variacion era +15,5 pb con umbral de 25, y habia BAJADO desde +20,1 mientras
+# el nivel subia). El unico disparador de nivel que existia, cruce_5pct, solo actua el dia
+# exacto del cruce: una vez por encima del 5% no vuelve a saltar jamas. El 01/09, con el
+# 30 anos al 5,21% y el gasto en intereses en record historico, el informe seguia sin
+# mencionarlo.
+#
+# Criterio: el nivel esta en el percentil superior de su propia historia reciente. Se usa
+# percentil y no umbral absoluto porque un numero fijo (5%, 90$) envejece mal y obliga a
+# recalibrar; el percentil se adapta solo y significa lo mismo en cualquier regimen.
+#
+# El credito es ASIMETRICO por diseno (igual que su alerta de velocidad): un ratio HYG/IEF
+# en minimos es tension crediticia, que es lo que se quiere ver; en maximos es apetito de
+# riesgo y no se avisa.
+
+UMBRAL_NIVEL_PCT   = 95    # percentil a partir del cual el nivel se considera extremo
+MIN_SESIONES_NIVEL = 60    # por debajo, un percentil no significa nada y no se evalua
+
+def _nivel_extremo(valores, pct=UMBRAL_NIVEL_PCT, alto=True):
+    """¿Esta el ULTIMO valor en el extremo de su propia historia? Devuelve dict o None.
+
+    `alto=True` mira el extremo superior (tipos, crudo); `alto=False` el inferior, para el
+    credito, donde la tension es el ratio cayendo.
+
+    Devuelve None —y no False— cuando no hay muestra suficiente: "no se puede afirmar" y
+    "no es extremo" son cosas distintas, y confundirlas es lo que hizo que el P69 fuera
+    necesario.
+    """
+    try:
+        vals = [float(v) for v in valores if v is not None and float(v) == float(v)]
+    except (TypeError, ValueError) as _e:
+        _traza('regimen/nivel-extremo', _e); return None
+    if len(vals) < MIN_SESIONES_NIVEL:
+        return None
+    actual = vals[-1]
+    if alto:
+        peores = sum(1 for v in vals if v <= actual)
+        extremo, ref = peores / len(vals) * 100.0, max(vals)
+    else:
+        peores = sum(1 for v in vals if v >= actual)
+        extremo, ref = peores / len(vals) * 100.0, min(vals)
+    return {'percentil': round(extremo, 1), 'n': len(vals),
+            'referencia': round(ref, 4), 'alerta_nivel': bool(extremo >= pct)}
+
+def _serie_tramo_historico(clave):
+    """Serie completa de niveles de un tramo de curva desde rates_history.json.
+
+    Reutiliza el cache que ya carga _nivel_hace_n_sesiones (P73), asi que no anade ninguna
+    lectura extra. Necesario porque Yahoo lleva desde el 12/08 sirviendo ~16 sesiones de los
+    simbolos de deuda: sin el historico propio no habria muestra para calcular un percentil.
+    """
+    _nivel_hace_n_sesiones(clave, 1)          # fuerza la carga del cache si aun no esta
+    entradas = _RATES_HIST_CACHE.get('entradas') or []
+    salida = []
+    for e in entradas:
+        v = ((e or {}).get('niveles') or {}).get(clave)
+        if isinstance(v, (int, float)):
+            salida.append(float(v))
+    return salida
+
 def _calc_macro_regimen():
     """
     NUEVO (07/07) — series de regimen: US30Y (^TYX), WTI (CL=F) y credito high-yield via
@@ -411,18 +478,26 @@ def _calc_macro_regimen():
         else:
             chg_20s_pb = _variacion_20s_pb('us30y', nivel)   # P73: serie propia
         cruce_5 = bool((vals[-2] < 5.0 <= vals[-1]) or (vals[-2] >= 5.0 > vals[-1]))
+        # P77 — el percentil se calcula sobre el historico PROPIO: la serie descargada
+        # trae ~16 sesiones y no da para nada. Si tampoco hay historico, se degrada a la
+        # serie descargada y, si esa no llega, _nivel_extremo devuelve None y no se afirma.
+        _niv = _nivel_extremo(_serie_tramo_historico('us30y')) or _nivel_extremo(list(vals))
         reg['us30y'] = {'nivel': nivel, 'chg_1d_pb': chg_1d_pb, 'chg_20s_pb': chg_20s_pb,
-                        'cruce_5pct': cruce_5,
+                        'cruce_5pct': cruce_5, 'nivel_extremo': _niv,
                         'alerta': bool((chg_20s_pb is not None and abs(chg_20s_pb) >= UMBRAL_30Y_PB)
-                                       or cruce_5)}
+                                       or cruce_5
+                                       or (_niv or {}).get('alerta_nivel'))}
     # 2) WTI — crudo
     swti = _serie('CL=F')
     if len(swti) >= 21:
         nivel = round(float(swti.iloc[-1]), 2)
         chg_1d  = round(float(swti.iloc[-1] / swti.iloc[-2] - 1) * 100, 1)
         chg_20s = round(float(swti.iloc[-1] / swti.iloc[-21] - 1) * 100, 1)
+        _niv = _nivel_extremo(list(swti.values.astype(float)))   # P77
         reg['wti'] = {'nivel': nivel, 'chg_1d_pct': chg_1d, 'chg_20s_pct': chg_20s,
-                      'alerta': bool(abs(chg_20s) >= UMBRAL_WTI_PCT)}
+                      'nivel_extremo': _niv,
+                      'alerta': bool(abs(chg_20s) >= UMBRAL_WTI_PCT
+                                     or (_niv or {}).get('alerta_nivel'))}
     # 3) Credito — ratio HYG/IEF (asimetrico: solo alerta el tensionamiento, no la mejora)
     shyg, sief = _serie('HYG'), _serie('IEF')
     if len(shyg) >= 21 and len(sief) >= 21:
@@ -431,9 +506,14 @@ def _calc_macro_regimen():
             r = ratio.values.astype(float)
             chg_1d  = round(float(r[-1] / r[-2] - 1) * 100, 2)
             chg_20s = round(float(r[-1] / r[-21] - 1) * 100, 2)
+            # P77 — asimetrico como su alerta de velocidad: el extremo que importa es el
+            # ratio en MINIMOS (tension crediticia), no en maximos.
+            _niv = _nivel_extremo(list(r), alto=False)
             reg['credito_hyg_ief'] = {'ratio': round(float(r[-1]), 4),
                                       'chg_1d_pct': chg_1d, 'chg_20s_pct': chg_20s,
-                                      'alerta': bool(chg_20s <= UMBRAL_CREDITO_PCT)}
+                                      'nivel_extremo': _niv,
+                                      'alerta': bool(chg_20s <= UMBRAL_CREDITO_PCT
+                                                     or (_niv or {}).get('alerta_nivel'))}
     # 3b) BITCOIN — apetito de riesgo (PUNTO 34, 02/08/2026)
     # Valor diferencial: BTC cotiza 24/7, incluida la sesion del sabado y del domingo que
     # NINGUNA otra serie del scanner cubre. La ejecucion de la madrugada del lunes puede por
@@ -552,8 +632,15 @@ def _calc_macro_regimen():
             _p = reg['curva']['pendientes_pb']
             partes.append('curva 10y-3m ' + (f"{_p['p10y_3m']:+.0f}pb" if 'p10y_3m' in _p else 'n/d') +
                           (f" | 30y-10y {_p['p30y_10y']:+.0f}pb" if 'p30y_10y' in _p else ''))
+        # P77 — la alerta dice AHORA por que salta: velocidad, nivel o ambas. Sin esto,
+        # "ALERTAS: us30y" no distingue un movimiento brusco de un maximo historico.
+        _detalle = []
+        for k in alertas:
+            _n = (reg[k] or {}).get('nivel_extremo') or {}
+            _detalle.append(f"{k} (nivel en percentil {_n['percentil']} de {_n['n']} sesiones)"
+                            if _n.get('alerta_nivel') else k)
         print('  Regimen macro: ' + ' | '.join(partes) +
-              (' | ⚠️ ALERTAS: ' + ', '.join(alertas) if alertas else ' | sin alertas de regimen'))
+              (' | ⚠️ ALERTAS: ' + ', '.join(_detalle) if alertas else ' | sin alertas de regimen'))
     return reg
 
 def _calc_estructura_indices():
@@ -3195,12 +3282,12 @@ def bloque_macro(data):
             _t = f'{_v:+} pb en 20 sesiones' if isinstance(_v, (int, float)) else 'variacion 20s no disponible'
             macro_txt += (f'- ALERTA DE REGIMEN — US30Y (bono 30 años): {u30.get("nivel")}% | '
                           f'{_t} | '
-                          f'{u30.get("chg_1d_pb"):+} pb hoy{extra}\n')
+                          f'{u30.get("chg_1d_pb"):+} pb hoy{extra}{_texto_nivel_extremo(u30)}\n')
         wti_r = reg.get('wti', {})
         if wti_r.get('alerta'):
             macro_txt += (f'- ALERTA DE REGIMEN — WTI (petroleo): ${wti_r.get("nivel")} | '
                           f'{wti_r.get("chg_20s_pct"):+}% en 20 sesiones | '
-                          f'{wti_r.get("chg_1d_pct"):+}% hoy\n')
+                          f'{wti_r.get("chg_1d_pct"):+}% hoy{_texto_nivel_extremo(wti_r)}\n')
         cred = reg.get('credito_hyg_ief', {})
         if cred.get('alerta'):
             macro_txt += (f'- ALERTA DE REGIMEN — CREDITO (ratio HYG/IEF): '
@@ -3728,6 +3815,22 @@ def data_json_publicable(min_frescos=MIN_FRESCOS_PARA_PUBLICAR):
                    'Se conserva el data.json anterior para no pisarlo con datos incompletos. '
                    'El resto de historicos si se actualizan.')
 
+
+def _texto_nivel_extremo(serie):
+    """P77 — frase lista para el prompt cuando el NIVEL es lo extremo, no la velocidad.
+
+    Se le da resuelta al modelo en vez de dejarle deducirlo de un percentil suelto: misma
+    leccion que el P33, el P53 y el P60. Y se dice explicitamente que puede haber alerta sin
+    movimiento brusco, porque si no el modelo tiende a buscar una variacion grande que no
+    existe y a describir el dato como tranquilo.
+    """
+    n = (serie or {}).get('nivel_extremo') or {}
+    if not n.get('alerta_nivel'):
+        return ''
+    return (f' | NIVEL EXTREMO: percentil {n["percentil"]} de sus ultimas {n["n"]} sesiones '
+            f'(referencia del periodo: {n["referencia"]}). Esta alerta la dispara el NIVEL, '
+            'no la velocidad: puede no haber habido ningun movimiento brusco reciente y aun '
+            'asi estar en un extremo historico. NO describirlo como un entorno tranquilo')
 
 def construir_prompt(data, externos=None):
     """PUNTO 47 (06/08/2026) — construye el prompt del informe. Extraida de generate_analysis.
