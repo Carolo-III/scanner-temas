@@ -2856,6 +2856,18 @@ def formato_correlacion_summary(cc, valid):
                 else:
                     partes.append(f'{tk}:{b} (corr {c})')
             s += 'Beta vs SPY: ' + ' | '.join(partes) + '\n'
+            # P81 (02/09/2026): la REGLA DE REDACCION de las betas es PERMANENTE, no solo
+            # cuando alguna es no significativa. El 01/09 las dos betas superaban
+            # MIN_CORR_BETA_SIGNIFICATIVA, no se emitio el AVISO BETAS y el informe publico
+            # "$CF -1.08, comportamiento defensivo/contraciclico" sin citar ninguna correlacion:
+            # el P60/P66 solo cubria el caso de betas de ruido y dejaba sin instruccion el caso
+            # contrario. Se saca la regla de la condicional para que rija siempre.
+            s += ('REGLA BETAS: al mencionar una beta en el informe, cita SIEMPRE su correlacion '
+                  'con el SPY entre parentesis, tal como figura arriba. NO agrupes varias betas '
+                  'bajo un adjetivo comun de signo ("las betas negativas de X e Y"): cada una '
+                  'tiene el signo que figura arriba. NO califiques un valor ni la cartera de '
+                  'defensivo, contraciclico, protegido ni de baja beta apoyandote solo en la '
+                  'beta: la beta mide sensibilidad, no proteccion.\n')
             if no_sig:
                 # P66 (13/08/2026): el aviso NOMBRA los tickers afectados en vez de dar solo un
                 # recuento. El 12/08 el informe escribio "las betas negativas de $FOXA (-0.41) y
