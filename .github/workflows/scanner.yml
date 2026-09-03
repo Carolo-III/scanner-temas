@@ -25,7 +25,7 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install yfinance pandas requests beautifulsoup4 anthropic pytz
+        run: pip install yfinance pandas requests beautifulsoup4 anthropic pytz httpx
 
       - name: Test conexion Anthropic
         run: |
