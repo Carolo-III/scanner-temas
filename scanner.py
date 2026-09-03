@@ -3203,7 +3203,11 @@ def validar_informe(analisis, universo_tickers):
             avisos.append(f'Sección obligatoria ausente: {s}')
     # Tickers mencionados como candidatos (con $TICKER o sin $)
     import re
-    tickers_informe = set(re.findall(r'\$([A-Z]{1,5})\b', analisis))
+    # P82 (03/09/2026) — el patron cortaba en el guion: de "$BF-B" extraia "BF", que no
+    # existe en el universo, y el aviso del P36 lo denunciaba como ticker inventado cada
+    # vez que el informe citaba una clase B (BF-B, BRK-B). Falso positivo puro. Se admite
+    # el sufijo de clase para que el ticker se compare entero.
+    tickers_informe = set(re.findall(r'\$([A-Z]{1,5}(?:-[A-Z]{1,2})?)\b', analisis))
     # REDEFINIDO (02/08/2026): el criterio original comparaba contra los 4-5 FINALISTAS con
     # tolerancia de 2, y habria disparado cada noche: las secciones EXTENDIDOS y SEGUIMIENTO
     # DE POSICIONES ABIERTAS nombran por diseño decenas de tickers que no son finalistas
@@ -3358,11 +3362,20 @@ def bloque_amplitud(data):
         _disp = breadth.get('dispersion') or {}
         if _disp.get('ratio') is not None:
             breadth_txt += (
-                f'- Dispersion indice/valor: {_disp["ratio"]} '
+                # P82 (03/09/2026) — la etiqueta decia "Dispersion indice/valor: 0.216" y el
+                # informe del 03/09 escribio "La dispersion indice/valor de 0,216 es baja: los
+                # valores se mueven mucho mas que el indice", contradictorio en la superficie.
+                # El nombre invertido del ratio (documentado desde el 04/08) reaparece en cuanto
+                # la palabra "dispersion" viaja pegada al numero. Se separan: el numero se llama
+                # RATIO, y la dispersion solo se nombra ya interpretada.
+                f'- Ratio de convergencia indice/valor: {_disp["ratio"]} '
                 f'(volatilidad anualizada del SPY {_disp.get("vol_spy_20s_pct","?")}% frente a '
                 f'{_disp.get("vol_media_valores_20s_pct","?")}% de media de los valores). '
-                f'Ratio BAJO = los valores se mueven mucho mas que el indice, mercado disperso '
-                f'donde la seleccion individual pesa mas; ratio ALTO = todo se mueve junto. '
+                f'ATENCION: este numero NO es el nivel de dispersion, es su INVERSO. Ratio BAJO = '
+                f'ALTA dispersion (los valores se mueven mucho mas que el indice, mercado disperso '
+                f'donde la seleccion individual pesa mas); ratio ALTO = BAJA dispersion (todo se '
+                f'mueve junto). NUNCA escribas "la dispersion es baja/alta" citando este numero al '
+                f'lado, ni llames "dispersion" a la cifra: si mencionas el numero, llamalo RATIO. '
                 f'NO hay umbral calibrado: describe el nivel y su evolucion, no lo clasifiques '
                 f'en categorias inventadas.\n')
         # P37b — contexto temporal: sin esto el informe describe la cifra del dia como
