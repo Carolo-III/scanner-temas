@@ -3171,6 +3171,13 @@ def rescatar_analisis_anterior(analisis, avisos):
               '(no se pisa lo que no se ha podido comprobar)')
         return analisis, False, True
     anterior = (previo.get('analisis') or '').strip()
+    # P83 (04/09/2026) — el banner se APILABA: cada rescate anteponia un aviso al texto
+    # anterior, que ya llevaba el suyo. Con dos fallos seguidos la web mostro dos avisos,
+    # uno citando el informe del 04/09 (que no existe) y otro el del 03/09. Se retiran los
+    # avisos previos antes de anteponer el nuevo, para que siempre haya exactamente uno y
+    # apunte al informe REAL que se esta mostrando.
+    import re as _re
+    anterior = _re.sub(r'^(> \*\*AVISO DEL SISTEMA[^\n]*\n+)+', '', anterior).strip()
     if len(anterior) < 500:
         # Aqui SI se sube: se ha comprobado que el anterior tampoco valia, asi que no hay
         # nada que destruir y el resto de data.json (amplitud, setups, seguimiento) si es
@@ -4047,12 +4054,17 @@ def generate_analysis(data, anthropic_key):
     # Un DETALLE DE CONFIGURACION no puede tumbar la generacion entera: el SDK acepta un
     # float como timeout, que cubre lo esencial. Se pierde solo el timeout de conexion
     # diferenciado (30s), y eso se dice en la traza en vez de fallar en silencio.
-    try:
-        import httpx
-        _timeout = httpx.Timeout(120.0, connect=30.0)
-    except Exception as _e:
-        _traza('anthropic/httpx-ausente', _e)
-        _timeout = 120.0
+    # P83 (04/09/2026) — SE ELIMINA httpx de esta ruta. Cronologia: la Action del 03/09
+    # genero informe SIN httpx instalado (timeout = float 120.0); el 04/09 se anadio httpx
+    # explicito al workflow y las DOS ejecuciones siguientes fallaron con "Connection error"
+    # en los tres intentos, con la conexion previa a Anthropic dando OK. La Celda 4 del
+    # 02/09, en Colab —que si trae httpx—, fallo igual. Los fallos coinciden con la rama del
+    # objeto httpx.Timeout; el float nunca ha fallado. No esta demostrado que la causa sea el
+    # objeto, pero el float cubre lo esencial, es la configuracion que si funciono y elimina
+    # una variable. Se pierde solo el timeout de conexion diferenciado (30s), que no vale
+    # una noche sin informe. httpx sigue instalado en el workflow: ya no lo usa nadie aqui,
+    # pero el SDK puede necesitarlo por dentro.
+    _timeout = 120.0
     msg=client.messages.create(model='claude-opus-4-8',max_tokens=MAX_TOKENS_INFORME,messages=[{'role':'user','content':prompt}], timeout=_timeout)
     texto = next(b.text for b in msg.content if hasattr(b, 'text'))
     if msg.stop_reason == 'max_tokens':
