@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 21 * * 1-5'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Simulacro: ejecuta todo pero NO sube nada al repo'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -25,7 +30,7 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install yfinance pandas requests beautifulsoup4 anthropic pytz httpx
+        run: pip install yfinance pandas requests beautifulsoup4 anthropic pytz
 
       - name: Test conexion Anthropic
         run: |
@@ -40,9 +45,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
           FMP_KEY: ${{ secrets.FMP_KEY }}
+          SCANNER_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         run: python scanner.py
 
       - name: Commit y push de datos actualizados
+        if: ${{ !inputs.dry_run }}
         run: |
           git config --global user.name 'Scanner Bot'
           git config --global user.email 'scanner@github.com'
