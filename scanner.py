@@ -2159,6 +2159,11 @@ def actualizar_breadth_history(breadth, macro, ts):
 
 URL_PUTCALL_CBOE = 'https://www.cboe.com/markets/us/options/market-statistics/daily/'
 
+# P85 (05/09/2026) — minimo de sesiones para dar CONTEXTO historico al put/call. Por
+# debajo de esto solo se pasan los niveles del dia: con una serie corta, un percentil es
+# ruido con aspecto de dato, y ese es justo el error que el P59 y el P60 costaron caro.
+MIN_SESIONES_PUTCALL = 20
+_PUTCALL_CACHE = {}
 RATIOS_PUTCALL = {
     'equity': 'EQUITY PUT/CALL RATIO',        # el termometro clasico de sentimiento minorista
     'total': 'TOTAL PUT/CALL RATIO',
@@ -2209,7 +2214,57 @@ def get_putcall_cboe():
     for nombre, etiqueta in RATIOS_PUTCALL.items():
         if etiqueta in etiquetas:
             salida[nombre] = etiquetas[etiqueta]
+    # P85 — el historial se lee AQUI, no en el bloque del prompt: el P64 dejo
+    # construir_prompt sin una sola llamada de red y esa propiedad no se rompe por un
+    # añadido. Esta funcion ya sale a internet, asi que es el sitio natural. Si la lectura
+    # falla, el contexto historico simplemente no aparece y los niveles del dia si.
+    _PUTCALL_CACHE['actual'] = salida
+    try:
+        _hist, _ = get_github_file('putcall_history.json')
+        if isinstance(_hist, list):
+            _PUTCALL_CACHE['historial'] = _hist
+    except Exception as _e:
+        _traza('putcall/historial', _e)
     return salida
+
+def _texto_putcall():
+    """P85 (05/09/2026) — put/call de Cboe al prompt.
+
+    Se recogia desde el P56 y se persistia a diario, pero NUNCA llegaba al informe: el
+    modelo hablaba de sentimiento sin ver el unico termometro de sentimiento que el
+    sistema mide. El detonante fue el 02/09: una recopilacion externa señalaba el ratio
+    call/put de acciones cerca de su maximo de cinco anios — una señal de posicionamiento
+    extremo que el scanner tenia en disco y no usaba.
+
+    El ratio EQUITY es el termometro clasico de sentimiento minorista y el unico que se
+    interpreta aqui: INDEX y SPX estan contaminados por coberturas institucionales, donde
+    un valor alto puede significar miedo o simple cobertura rutinaria. La direccion es
+    contraintuitiva y se resuelve en Python, no en el prompt (leccion del P33 y del P82):
+    ratio BAJO = pocos puts por cada call = complacencia.
+    """
+    actual = _PUTCALL_CACHE.get('actual') or {}
+    if not actual:
+        return ''
+    txt = ('PUT/CALL DE CBOE (sentimiento de opciones, sesion anterior):\n'
+           '- ' + ' | '.join(f'{k}={v}' for k, v in sorted(actual.items())) + '\n')
+    eq = actual.get('equity')
+    if eq is not None:
+        txt += (f'- EQUITY put/call = {eq}. Es el termometro de sentimiento MINORISTA y el unico '
+                'de la lista que conviene interpretar: INDEX y SPX estan contaminados por '
+                'coberturas institucionales. Lectura: ratio BAJO = pocas puts por cada call = '
+                'COMPLACENCIA/apetito de riesgo; ratio ALTO = MIEDO. Es un indicador de '
+                'sentimiento CONTRARIO, no una señal de entrada.\n')
+    hist = [e for e in (_PUTCALL_CACHE.get('historial') or []) if e.get('equity') is not None]
+    if eq is not None and len(hist) >= MIN_SESIONES_PUTCALL:
+        serie = [e['equity'] for e in hist]
+        pct = round(100.0 * sum(1 for v in serie if v <= eq) / len(serie), 1)
+        txt += (f'- Contexto: percentil {pct} de las ultimas {len(serie)} sesiones registradas '
+                f'(minimo {min(serie)}, maximo {max(serie)}).\n')
+    elif eq is not None:
+        txt += (f'- Sin contexto historico: la serie propia solo tiene {len(hist)} sesiones, por '
+                f'debajo del minimo de {MIN_SESIONES_PUTCALL}. NO situes el valor de hoy como alto, '
+                'bajo, extremo ni historico: no hay base para hacerlo. Describe el nivel y nada mas.\n')
+    return txt
 
 def construir_entrada_putcall(putcall, macro, ts):
     """Una linea de la serie: fecha de SESION del panel + los ratios del dia."""
@@ -3897,6 +3952,11 @@ def construir_prompt(data, externos=None):
     # Datos macro para el prompt
     macro_txt = bloque_macro(data)
     breadth_txt = bloque_amplitud(data)
+    # P85 — el put/call va junto a la amplitud: ambos describen el estado interno del
+    # mercado, no un valor concreto.
+    _pc = _texto_putcall()
+    if _pc:
+        breadth_txt = (breadth_txt + '\n' + _pc) if breadth_txt else _pc
 
     summary=f'DATOS — {ts}\nSPY sobre MM200: {"SI" if spy_ok else "NO"}\n\n' + macro_txt + breadth_txt + 'FUERTES:\n'
     for g in strong[:5]:
