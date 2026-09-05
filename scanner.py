@@ -4504,6 +4504,16 @@ def clean_nan(obj):
     return obj
 
 def upload_to_github(filename, content):
+    # P84 (05/09/2026) — FUGA DEL SIMULACRO, detectada en la primera prueba real: el
+    # simulacro se implanto solo en upload_files_to_github, pero setups_history.json se
+    # sube ANTES y por esta via individual (checkpoint de seguridad previo al analisis).
+    # El log del simulacro imprimio "OK setups_history.json": es decir, SI escribio en el
+    # repo. Un modo que promete no tocar nada tiene que cumplirlo en TODAS las rutas, y
+    # esta funcion es ademas el fallback de la otra.
+    if DRY_RUN:
+        _n = len(content) if content is not None else 0
+        print(f'  🧪 SIMULACRO: {filename} NO se sube ({_n:,} bytes)')
+        return
     url=f'https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}/contents/{filename}'
     headers={'Authorization':f'token {GITHUB_TOKEN}','Content-Type':'application/json'}
     r=requests.get(url,headers=headers); sha=r.json().get('sha') if r.status_code==200 else None
