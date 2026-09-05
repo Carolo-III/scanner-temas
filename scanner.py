@@ -4145,6 +4145,21 @@ def generate_analysis(data, anthropic_key):
         print(f'  AVISO: el analisis se corto por limite de max_tokens (texto truncado, {len(texto)} caracteres generados). '
               f'Considera revisar si el prompt o el numero de setups ha crecido demasiado.')
         texto += '\n\n*(Aviso del sistema: este informe quedo incompleto por limite de longitud de la respuesta.)*'
+    # P85b (05/09/2026) — en simulacro NO se sube data.json, asi que el informe generado se
+    # perdia: la ejecucion demostraba que el codigo no revienta, pero no dejaba ver el
+    # RESULTADO, que es lo que se quiere revisar al tocar el prompt. Se vuelca al log el
+    # prompt y el informe completos. Solo en simulacro: en produccion inflaria el log cada
+    # noche sin aportar nada, porque el informe ya se publica en la web.
+    if DRY_RUN:
+        print('\n' + '=' * 60)
+        print(f'🧪 SIMULACRO — PROMPT ENVIADO ({len(prompt):,} caracteres)')
+        print('=' * 60)
+        print(prompt)
+        print('\n' + '=' * 60)
+        print(f'🧪 SIMULACRO — INFORME GENERADO ({len(texto):,} caracteres)')
+        print('=' * 60)
+        print(texto)
+        print('=' * 60 + '\n')
     return texto
 
 def get_github_file(filename, reintentos=3):
