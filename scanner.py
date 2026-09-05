@@ -2732,6 +2732,20 @@ MIN_MIEMBROS_TEMA = 2
 # bajo a proposito (bloquear es mas caro que avisar) y solo frena vuelcos claramente
 # incompletos como el del 12/08, que se quedo en 85,5%.
 MIN_FRESCOS_PARA_PUBLICAR = 88.0
+# P84 (05/09/2026) — MODO SIMULACRO. Con SCANNER_DRY_RUN=1 el pipeline corre entero
+# (descarga, amplitud, setups, prompt, informe, Telegram no) pero NO sube NADA al repo.
+# Motivo: hasta ahora validar un parche exigia ejecutar, y ejecutar escribia en los once
+# ficheros. Esa semana costo cinco filas de mas en setups_registro, DOS entradas de
+# breadth_history pisadas con paneles rotos y un JSON corrupto. Probar no puede seguir
+# implicando destruir datos.
+DRY_RUN = os.environ.get('SCANNER_DRY_RUN', '').strip().lower() in ('1', 'true', 'si', 'yes')
+# P84 — ficheros que se calculan A PARTIR del panel descargado y que, por tanto, quedan
+# igual de contaminados que data.json cuando la descarga viene parcial. El P65 solo vetaba
+# data.json "porque los historicos tienen dedupe y la ejecucion siguiente los corrige":
+# eso es FALSO para las series por fecha, donde un cierre posterior SOBRESCRIBE la entrada
+# de esa sesion. El 02/09 y el 04/09 dos ejecuciones con panel roto destruyeron las
+# lecturas buenas del 01/09 y del 03/09, y hubo que restaurarlas a mano desde los logs.
+FICHEROS_DERIVADOS_DEL_PANEL = ('data.json', 'breadth_history.json', 'rates_history.json')
 # PUNTO 25 — ultimo breadth calculado en esta ejecucion (calc_market_breadth corre antes
 # que update_setups_history en ambos flujos), para etiquetar cada setup con la dispersion
 # del dia en que nacio sin cambiar firmas de funciones.
@@ -4613,7 +4627,29 @@ def upload_files_to_github(files):
             print(f'  ⚠️ Subida de {fn} OMITIDA: contenido nulo (fallo previo de lectura) — se conserva la version del repo')
             continue
         limpios[fn] = contenido
+    # P84 — el veto de frescura del P65 se extiende aqui a TODO lo derivado del panel, no
+    # solo a data.json. Se aplica en la subida y no en el llamador porque este es el unico
+    # punto por el que pasan las dos rutas (main y la celda 4 del notebook): asi no hay
+    # espejo que mantener. Si el llamador ya saco data.json, este pop es inocuo.
+    if limpios:
+        _pub, _mot = data_json_publicable()
+        if not _pub:
+            _fuera = [fn for fn in FICHEROS_DERIVADOS_DEL_PANEL if fn in limpios]
+            for fn in _fuera:
+                limpios.pop(fn, None)
+            if _fuera:
+                print(f'  🔴 P84 — panel incompleto: NO se suben {", ".join(_fuera)} '
+                      f'(derivados del panel). Se conservan las versiones del repo.')
     if not limpios:
+        return
+    # P84 — modo simulacro: se ha hecho todo el trabajo y se informa de que se HABRIA
+    # subido, pero no se toca el repo. Va despues de los filtros para que el simulacro
+    # muestre exactamente la tanda real.
+    if DRY_RUN:
+        print('  🧪 SIMULACRO (SCANNER_DRY_RUN): no se sube NADA al repo. Se habrian subido '
+              f'{len(limpios)} fichero(s):')
+        for fn, contenido in sorted(limpios.items()):
+            print(f'     - {fn} ({len(contenido):,} bytes)')
         return
     base = f'https://api.github.com/repos/{GITHUB_USER}/{GITHUB_REPO}'
     headers = {'Authorization': f'token {GITHUB_TOKEN}', 'Content-Type': 'application/json'}
@@ -4707,6 +4743,11 @@ def _identidad_telegram():
     print(f'     [identidad] bot id={bot} | chat={chat_vis} — comparalo con el otro entorno')
 
 def send_telegram(message):
+    # P84 — en simulacro NO se envia a Telegram: una prueba no debe mandarte alertas
+    # reales al movil. Se imprime lo que se habria enviado, que es lo que interesa validar.
+    if DRY_RUN:
+        print(f'  🧪 SIMULACRO: alerta Telegram NO enviada ({len(message)} caracteres)')
+        return
     if not TELEGRAM_TOKEN:
         print('  TELEGRAM_TOKEN no configurado — alerta omitida')
         return
