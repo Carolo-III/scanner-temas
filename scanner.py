@@ -695,6 +695,16 @@ def _calc_macro_regimen():
             partes.append(f"US30Y {reg['us30y']['nivel']}% ({_t30})")
         if 'wti' in reg: partes.append(f"WTI ${reg['wti']['nivel']} ({reg['wti']['chg_20s_pct']:+}%/20s)")
         if 'credito_hyg_ief' in reg: partes.append(f"HYG/IEF {reg['credito_hyg_ief']['chg_20s_pct']:+}%/20s")
+        # P86b (06/09/2026) — OBSERVABILIDAD. El P86 se entrego sin ninguna forma de saber si
+        # FRED habia respondido: el OAS solo llegaba al prompt cuando DISPARABA alerta, asi que
+        # un fallo silencioso de la descarga era indistinguible de un mercado tranquilo. Es el
+        # mismo error que el P85 (dar el dato sin poder verlo) y el P84 (dar por bueno lo no
+        # ejecutado). Ahora el resumen del log dice SIEMPRE en que estado esta el sensor.
+        if 'credito_oas' in reg:
+            _o = reg['credito_oas']
+            partes.append(f"OAS HY {_o['nivel_pb']}pb ({_o['chg_20s_pb']:+}pb/20s)")
+        else:
+            partes.append("OAS HY sin dato (FRED no respondio, se usa HYG/IEF)")
         if 'btc' in reg:
             _b = reg['btc']
             _txt = f"BTC ${_b['nivel']:,.0f} ({_b['chg_7d_pct']:+}%/7d"
