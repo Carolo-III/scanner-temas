@@ -341,6 +341,19 @@ def calc_market_breadth(universe_close, bench_close):
 UMBRAL_30Y_PB      = 25    # |cambio en 20 sesiones| del bono a 30 años, en puntos basicos
 UMBRAL_WTI_PCT     = 10    # |cambio en 20 sesiones| del crudo WTI, en %
 UMBRAL_CREDITO_PCT = -2.0  # caida del ratio HYG/IEF en 20 sesiones (credito tensionandose)
+# P86 (06/09/2026) — DIFERENCIALES REALES (OAS) COMO SENSOR PRIMARIO DE CREDITO.
+# El ratio HYG/IEF es una aproximacion de segunda mano: mezcla el diferencial con la
+# duracion del Tesoro, asi que un movimiento de tipos lo mueve sin que el credito se haya
+# tensionado. Lo que miran las mesas es el OPTION-ADJUSTED SPREAD de los indices ICE BofA,
+# que la Fed de St. Louis publica gratis y a diario. Se pasa a sensor primario y HYG/IEF
+# queda como respaldo si FRED falla.
+# LIMITACION QUE HAY QUE DECIR EN VOZ ALTA: esto NO aisla a los hiperescaladores, que es lo
+# que de verdad financia la watchlist. Ese dato no existe en fuentes publicas gratuitas
+# (haria falta Bloomberg o TRACE). Esto mide el credito corporativo en conjunto y es una
+# mejora real sobre HYG/IEF, no la solucion al problema original.
+FRED_OAS_HY = 'BAMLH0A0HYM2'   # ICE BofA US High Yield Index OAS, en puntos porcentuales
+FRED_OAS_IG = 'BAMLC0A0CM'     # ICE BofA US Corporate (grado de inversion) Index OAS
+UMBRAL_OAS_HY_PB = 50.0        # ampliacion en 20 sesiones que dispara alerta, en pb
 
 def calc_pendientes_curva(niveles):
     """Pendientes de la curva en puntos basicos a partir de {clave: yield en %}.
@@ -426,6 +439,60 @@ def _serie_tramo_historico(clave):
         v = ((e or {}).get('niveles') or {}).get(clave)
         if isinstance(v, (int, float)):
             salida.append(float(v))
+    return salida
+
+def _serie_fred(serie_id, dias=200):
+    """P86 — descarga una serie diaria de FRED en CSV. Sin clave y sin dependencias.
+
+    Devuelve lista de floats (mas antiguo primero) o [] si algo falla. FRED publica los
+    festivos como '.', que se descartan. NOTA: la serie va con uno o dos dias de RETRASO
+    respecto al cierre de bolsa, asi que el ultimo valor no es el de la sesion de hoy —
+    esto se advierte en el prompt para que el informe no lo presente como dato del dia.
+    """
+    url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={serie_id}'
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200:
+            _traza('fred/http', Exception(f'{serie_id} HTTP {r.status_code}'))
+            return []
+        vals = []
+        for linea in r.text.strip().splitlines()[1:]:
+            partes = linea.split(',')
+            if len(partes) < 2:
+                continue
+            try:
+                vals.append(float(partes[-1].strip()))
+            except ValueError:
+                continue          # '.' de festivo o cabecera rara
+        return vals[-dias:]
+    except Exception as e:
+        _traza('fred/descarga', e)
+        return []
+
+def _calc_credito_oas():
+    """P86 — sensor de credito por diferenciales reales. Devuelve dict o {}.
+
+    Direccion, que se resuelve AQUI y no en el prompt (leccion recurrente del P33/P82):
+    el OAS es lo que el mercado exige POR ENCIMA del Tesoro, asi que AMPLIARSE es
+    tensionamiento y ESTRECHARSE es apetito de riesgo. Es el signo contrario al del ratio
+    HYG/IEF, que sube cuando el credito mejora — por eso conviven mal y hay que ser
+    explicito. Asimetrico igual que el sensor anterior: solo alerta la tension.
+    """
+    hy = _serie_fred(FRED_OAS_HY)
+    if len(hy) < 21:
+        return {}
+    nivel_pb = round(hy[-1] * 100, 1)
+    chg_20s_pb = round((hy[-1] - hy[-21]) * 100, 1)
+    chg_1d_pb = round((hy[-1] - hy[-2]) * 100, 1)
+    _niv = _nivel_extremo(hy, alto=True)   # el extremo que importa es el OAS ALTO
+    salida = {'nivel_pb': nivel_pb, 'chg_1d_pb': chg_1d_pb, 'chg_20s_pb': chg_20s_pb,
+              'nivel_extremo': _niv,
+              'alerta': bool(chg_20s_pb >= UMBRAL_OAS_HY_PB
+                             or (_niv or {}).get('alerta_nivel'))}
+    ig = _serie_fred(FRED_OAS_IG)
+    if len(ig) >= 21:
+        salida['ig_nivel_pb'] = round(ig[-1] * 100, 1)
+        salida['ig_chg_20s_pb'] = round((ig[-1] - ig[-21]) * 100, 1)
     return salida
 
 def _calc_macro_regimen():
@@ -514,6 +581,11 @@ def _calc_macro_regimen():
                                       'nivel_extremo': _niv,
                                       'alerta': bool(chg_20s <= UMBRAL_CREDITO_PCT
                                                      or (_niv or {}).get('alerta_nivel'))}
+    # 3c) P86 — CREDITO POR DIFERENCIALES (OAS de FRED). Sensor PRIMARIO; HYG/IEF de arriba
+    # se conserva como respaldo y para no romper la serie historica ya acumulada.
+    _oas = _calc_credito_oas()
+    if _oas:
+        reg['credito_oas'] = _oas
     # 3b) BITCOIN — apetito de riesgo (PUNTO 34, 02/08/2026)
     # Valor diferencial: BTC cotiza 24/7, incluida la sesion del sabado y del domingo que
     # NINGUNA otra serie del scanner cubre. La ejecucion de la madrugada del lunes puede por
@@ -3380,8 +3452,21 @@ def bloque_macro(data):
             macro_txt += (f'- ALERTA DE REGIMEN — WTI (petroleo): ${wti_r.get("nivel")} | '
                           f'{wti_r.get("chg_20s_pct"):+}% en 20 sesiones | '
                           f'{wti_r.get("chg_1d_pct"):+}% hoy{_texto_nivel_extremo(wti_r)}\n')
+        # P86 — el OAS manda cuando esta disponible; HYG/IEF solo si FRED no respondio.
+        oas = reg.get('credito_oas', {})
+        if oas.get('alerta'):
+            macro_txt += (f'- ALERTA DE REGIMEN — CREDITO (diferencial OAS high-yield ICE BofA): '
+                          f'{oas.get("nivel_pb")} pb | {oas.get("chg_20s_pb"):+} pb en 20 sesiones | '
+                          f'{oas.get("chg_1d_pb"):+} pb en el ultimo dato'
+                          + (f' | grado de inversion {oas.get("ig_nivel_pb")} pb '
+                             f'({oas.get("ig_chg_20s_pb"):+} pb/20s)' if oas.get('ig_nivel_pb') is not None else '')
+                          + _texto_nivel_extremo(oas) +
+                          '. AMPLIARSE = tension crediticia (el mercado exige mas prima sobre el Tesoro); '
+                          'estrecharse = apetito de riesgo. Mide el credito corporativo EN CONJUNTO, '
+                          'NO a los hiperescaladores en particular. El dato lleva 1-2 dias de retraso '
+                          'respecto al cierre de bolsa: no lo presentes como movimiento de hoy.\n')
         cred = reg.get('credito_hyg_ief', {})
-        if cred.get('alerta'):
+        if cred.get('alerta') and not oas:
             macro_txt += (f'- ALERTA DE REGIMEN — CREDITO (ratio HYG/IEF): '
                           f'{cred.get("chg_20s_pct"):+}% en 20 sesiones | '
                           f'{cred.get("chg_1d_pct"):+}% hoy '
@@ -4068,7 +4153,7 @@ def construir_prompt(data, externos=None):
         'Analista tecnico momentum. Informe ejecutivo espanol directo. ' + aviso +
         'Estructura: 1.MERCADO 2.TEMAS PRIORITARIOS 3.ENTRADAS(niveles exactos) 4.EXTENDIDOS 5.CONCLUSION. La CONCLUSION es OBLIGATORIO que termine con un parrafo separado titulado exactamente **RIESGOS DEL ESCENARIO** que liste en 3-4 puntos concisos que condiciones invalidarian la tesis alcista actual: perdida de MM200 por SPY, perdida de liderazgo sectorial, VIX elevado, deterioro de amplitud de mercado, resultados empresariales negativos proximos. Este parrafo NO es opcional. '
         'PUNTO 8 — AMPLITUD DE MERCADO: si el bloque AMPLITUD DE MERCADO aparece en los datos, usalo en la seccion MERCADO para matizar el regimen general (SPY>MM200 es una sola variable; la amplitud dice si ese movimiento esta respaldado por la mayoria de valores o solo por unos pocos). Interpreta los datos asi: % sobre MM50/MM200 por debajo del 50% mientras el SPY esta alcista indica un "rally estrecho" (pocos valores liderando, mercado fragil bajo la superficie); % por encima del 60-70% indica amplitud sana. Si nuevos minimos de 52 semanas superan a los nuevos maximos, es una señal de deterioro interno aunque el indice general suba. Esta informacion es CONTEXTO, no debe usarse para invalidar ni recalcular el RIESGO de los setups individuales (que depende solo de SCT/RSI/CMF/ADX del valor) — su unico rol es matizar la lectura del regimen de mercado en la seccion 1 y, si aplica, dar contenido especifico y verificable al punto de "deterioro de amplitud de mercado" en RIESGOS DEL ESCENARIO en lugar de mencionarlo de forma generica. '
-        'ALERTAS DE REGIMEN MACRO: las lineas "ALERTA DE REGIMEN" solo aparecen en los datos cuando un umbral de VELOCIDAD se ha disparado (US30Y: ±25 pb en 20 sesiones o cruce del 5.00%; WTI: ±10% en 20 sesiones; CREDITO: ratio HYG/IEF cayendo mas de un 2% en 20 sesiones, señal de diferenciales high-yield tensionandose — el sensor adelantado de aversion al riesgo mas fiable de este bloque, porque el credito suele estresarse antes que la renta variable). Si aparecen, integralas en la seccion 1 (MERCADO) y en RIESGOS DEL ESCENARIO aplicando el mapa de transmision sectorial: tipos largos subiendo con fuerza presionan los sectores de duracion larga (biotech sin beneficios, tecnologia de multiplo alto) y favorecen relativamente a las financieras; petroleo subiendo con fuerza favorece a energia y presiona a transporte, aerolineas y consumo discrecional; credito tensionandose da mas valor relativo a los setups de calidad y defensivos (utilities, telecos, salud, basicos) frente a los de beta alta. Usa el mapa para contextualizar los setups del dia cuando la alerta afecte a sus sectores, sin forzarlo cuando no aplique. Cada linea trae DOS ventanas: el cambio en 20 sesiones (el regimen) y el cambio de hoy (la tactica del dia) — pueden divergir (ej.: crudo cayendo un 20% en el mes pero repuntando hoy por geopolitica) y en ese caso debes reflejar ambas, con el regimen como lectura principal y el movimiento del dia como matiz. Estas alertas describen el REGIMEN actual, no predicen la proxima sesion: nunca las conviertas en pronosticos. Si NO aparece ninguna linea de ALERTA DE REGIMEN, tienes PROHIBIDO mencionar el bono a 30 años, el petroleo o el credito high-yield en el informe — ni siquiera para decir que estan estables o sin cambios: el silencio es la señal de normalidad y el comentario macro de relleno esta prohibido. '
+        'ALERTAS DE REGIMEN MACRO: las lineas "ALERTA DE REGIMEN" solo aparecen en los datos cuando un umbral de VELOCIDAD se ha disparado (US30Y: ±25 pb en 20 sesiones o cruce del 5.00%; WTI: ±10% en 20 sesiones; CREDITO: el diferencial OAS high-yield de ICE BofA ampliandose 50 pb o mas en 20 sesiones, o en nivel extremo — es el sensor adelantado de aversion al riesgo mas fiable de este bloque, porque el credito suele estresarse antes que la renta variable; si FRED no responde se usa como respaldo el ratio HYG/IEF, que cae cuando el credito se tensiona, es decir con el signo CONTRARIO al del OAS — usa en cada caso la lectura de direccion que venga escrita en la propia linea de alerta y no la deduzcas tu). Si aparecen, integralas en la seccion 1 (MERCADO) y en RIESGOS DEL ESCENARIO aplicando el mapa de transmision sectorial: tipos largos subiendo con fuerza presionan los sectores de duracion larga (biotech sin beneficios, tecnologia de multiplo alto) y favorecen relativamente a las financieras; petroleo subiendo con fuerza favorece a energia y presiona a transporte, aerolineas y consumo discrecional; credito tensionandose da mas valor relativo a los setups de calidad y defensivos (utilities, telecos, salud, basicos) frente a los de beta alta. Usa el mapa para contextualizar los setups del dia cuando la alerta afecte a sus sectores, sin forzarlo cuando no aplique. Cada linea trae DOS ventanas: el cambio en 20 sesiones (el regimen) y el cambio de hoy (la tactica del dia) — pueden divergir (ej.: crudo cayendo un 20% en el mes pero repuntando hoy por geopolitica) y en ese caso debes reflejar ambas, con el regimen como lectura principal y el movimiento del dia como matiz. Estas alertas describen el REGIMEN actual, no predicen la proxima sesion: nunca las conviertas en pronosticos. Si NO aparece ninguna linea de ALERTA DE REGIMEN, tienes PROHIBIDO mencionar el bono a 30 años, el petroleo o el credito high-yield en el informe — ni siquiera para decir que estan estables o sin cambios: el silencio es la señal de normalidad y el comentario macro de relleno esta prohibido. '
         'ESTRUCTURA DE INDICES (MM50): la linea "ESTRUCTURA DE INDICES" solo aparece cuando el SPY o el QQQ han cruzado su media movil de 50 sesiones recientemente o estan testandola (±1%). Es contexto TACTICO de corto plazo, distinto del regimen (que sigue siendo la MM200): un indice rebotando en su MM50 con la MM200 alcista es una correccion normal dentro de tendencia; un indice bajo su MM50 durante muchas sesiones indica que el tramo tactico es debil aunque el regimen aguante. Integralo en la seccion 1 (MERCADO) en una o dos frases, y conectalo con los setups del dia cuando aplique (ej.: si los setups son pullbacks a MM50 individuales el mismo dia que el indice testa la suya, es una correccion sincronizada de mercado — nombrable como contexto, ni mejor ni peor per se). Si la linea NO aparece, tienes PROHIBIDO mencionar las medias de 50 sesiones de los indices — el silencio es normalidad. Nunca lo conviertas en pronostico. '
         'PUNTO 10 — SEGUIMIENTO CMF + SUPERTREND: si aparece el bloque "SEGUIMIENTO — ALERTAS" en los datos, anyadelo como una seccion separada ENTRE la seccion 4 (EXTENDIDOS) y la CONCLUSION, titulada exactamente "SEGUIMIENTO DE POSICIONES ABIERTAS". Distingue claramente DOS niveles de urgencia, nunca los trates igual: (A) si un ticker lleva la marca "CMF NEGATIVO N SESIONES CONSECUTIVAS", es una señal blanda pero ya CONFIRMADA: no es un mal dia aislado, el flujo lleva N sesiones seguidas en terreno vendedor (distribucion sostenida) — la regla es valorar reducir el tamaño de la posicion a la mitad hasta que el CMF recupere terreno positivo. Cuanto mayor sea N, mas asentada esta la distribucion, pero la REGLA OPERATIVA ES LA MISMA para todas las alertas blandas independientemente de N: valorar reducir al 50%. NUNCA degrades las rachas cortas (3-5 sesiones) a "vigilar sin reducir" ni inventes niveles intermedios de urgencia dentro de las blandas — si una alerta aparece en los datos es porque ya cumple el minimo de confirmacion del sistema, y las rachas cortas en posiciones muy ganadoras son precisamente los giros de flujo mas frescos y accionables, no los menos urgentes. (B) si un ticker lleva la marca SUPERTREND BAJISTA, es una señal dura y mas urgente: el precio ya ha cruzado por debajo del nivel dinamico de Supertrend (indicado en la marca), lo que significa que la estructura de tendencia que sostenia el setup ya se ha roto — no es "vigilar", es una señal de salida total de la posicion, mas decisiva que la alerta CMF. Las señales son EXCLUYENTES por diseño: la dura absorbe a la blanda (nunca veras ambas en el mismo ticker, y nunca debes sugerir a la vez "reducir 50%" y "salida total" para un mismo valor). Ademas, AMBOS tipos de alerta corresponden UNICAMENTE a condiciones surgidas DESPUES de la entrada del setup: las rupturas Supertrend son posteriores a la entrada, y las rachas de CMF negativo empezaron tras la entrada — los setups que ya nacieron con el Supertrend bajista o con el CMF en negativo no generan alerta (no tiene sentido "salir" o "reducir" por una condicion que ya existia al entrar), asi que toda alerta que veas es un deterioro genuinamente nuevo sobre la posicion. Dentro del caso (B) los datos distinguen DOS variantes que NUNCA debes redactar igual: "SUPERTREND BAJISTA NUEVO — ruptura de esta sesion" significa que la direccion ha cambiado a bajista precisamente en la sesion mas reciente — es el caso mas urgente de actuar y puedes redactarlo como ruptura del dia ("ha cruzado por debajo..."). "SUPERTREND BAJISTA PERSISTENTE desde hace N sesiones" significa que la ruptura NO es de hoy: lleva N sesiones activa y el precio simplemente no ha recuperado el nivel necesario para revertirla — NUNCA lo redactes como si la ruptura acabara de producirse; indica explicitamente desde cuando esta rota la tendencia ("Supertrend bajista desde hace N sesiones") y ajusta el framing: la decision de salida ya deberia haberse tomado en su momento, la mencion actual es un recordatorio de que la estructura sigue rota, no una alerta urgente de esta sesion. Un dia con subida fuerte puede coexistir con Supertrend bajista persistente si el cierre no ha cruzado el nivel indicado — no lo presentes como contradiccion, es el diseño del indicador. Si hay mas de 10 alertas en total, agrupa: menciona primero los casos con SUPERTREND BAJISTA (los mas urgentes, hasta 5), luego los 3-5 casos de CMF mas relevantes por retorno, y resume el resto en una frase tipo "otros N valores con distribucion confirmada — misma regla de reduccion al 50%". Cita siempre el retorno actual (ret_pct). Si no hay alertas, no incluyas esta seccion. Seccion operativa, no analitica. '
         'Escribe cada seccion de forma que sea comprensible tanto para un analista tecnico como para un inversor adulto con conocimientos generales de bolsa pero sin experiencia en analisis tecnico. '
