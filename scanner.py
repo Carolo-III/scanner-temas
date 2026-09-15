@@ -354,6 +354,18 @@ UMBRAL_CREDITO_PCT = -2.0  # caida del ratio HYG/IEF en 20 sesiones (credito ten
 FRED_OAS_HY = 'BAMLH0A0HYM2'   # ICE BofA US High Yield Index OAS, en puntos porcentuales
 FRED_OAS_IG = 'BAMLC0A0CM'     # ICE BofA US Corporate (grado de inversion) Index OAS
 UMBRAL_OAS_HY_PB = 50.0        # ampliacion en 20 sesiones que dispara alerta, en pb
+# P88 (15/09/2026) — VELOCIDAD DEL 10 ANOS, con umbral auto-calibrado.
+# Base: el estudio de Goldman (Exhibit 8) mide el cambio a 1 MES del 10 anos como Z-SCORE
+# frente a los 3 anos previos, y el rendimiento mensual del S&P solo se deteriora en el
+# tramo de MAS de 2 sigmas — el tramo 1-2 sigmas sale PLANO. Es decir: no hay degradacion
+# gradual, solo el extremo importa. La propia nota dice que 2 sigmas HOY equivalen a unos
+# 40-50 pb, lo que confirma que el umbral en pb es MOVIL y envejece; por eso se calcula el
+# z-score en vez de cablear los 50 pb (mismo razonamiento que el P77 con los percentiles).
+# Hace falta ventana de 3 anos, que rates_history no tiene (empieza en febrero), asi que la
+# serie se toma de FRED igual que el OAS.
+FRED_DGS10 = 'DGS10'           # rendimiento del Tesoro a 10 anos, serie diaria de FRED
+UMBRAL_Z_10Y = 2.0             # sigmas del cambio a 1 mes; por debajo, el estudio no ve efecto
+VENTANA_Z_10Y = 756            # ~3 anos de sesiones, la referencia del estudio
 
 def calc_pendientes_curva(niveles):
     """Pendientes de la curva en puntos basicos a partir de {clave: yield en %}.
@@ -468,6 +480,34 @@ def _serie_fred(serie_id, dias=200):
     except Exception as e:
         _traza('fred/descarga', e)
         return []
+
+def _calc_velocidad_10y():
+    """P88 — z-score del cambio a 1 mes del 10 anos frente a sus ultimos 3 anos.
+
+    Devuelve dict o {}. Alerta SOLO por encima de UMBRAL_Z_10Y, sin niveles intermedios,
+    porque el estudio no encuentra deterioro en el tramo 1-2 sigmas. Es SIMETRICO por
+    diseno: una caida brusca de tipos tambien es un cambio de regimen, y el propio grafico
+    muestra rendimiento negativo en el extremo de bajada fuerte (z < -2).
+    """
+    serie = _serie_fred(FRED_DGS10, dias=VENTANA_Z_10Y)
+    if len(serie) < 252:                      # menos de un ano: no hay referencia creible
+        return {}
+    cambios = [serie[i] - serie[i - 21] for i in range(21, len(serie))]
+    if len(cambios) < 200:
+        return {}
+    media = sum(cambios) / len(cambios)
+    var = sum((c - media) ** 2 for c in cambios) / (len(cambios) - 1)
+    sd = var ** 0.5
+    if sd <= 0:
+        return {}
+    actual = serie[-1] - serie[-22]
+    z = round((actual - media) / sd, 2)
+    return {'nivel_pct': round(serie[-1], 3),
+            'chg_1m_pb': round(actual * 100, 1),
+            'z': z,
+            'sigma_2_pb': round(2 * sd * 100, 1),   # a cuantos pb equivalen 2 sigmas HOY
+            'n_sesiones': len(serie),
+            'alerta': bool(abs(z) >= UMBRAL_Z_10Y)}
 
 def _calc_credito_oas():
     """P86 — sensor de credito por diferenciales reales. Devuelve dict o {}.
@@ -586,6 +626,10 @@ def _calc_macro_regimen():
     _oas = _calc_credito_oas()
     if _oas:
         reg['credito_oas'] = _oas
+    # P88 — velocidad del 10 anos. Instrumentacion: NO toca score, RIESGO ni RANKING.
+    _v10 = _calc_velocidad_10y()
+    if _v10:
+        reg['velocidad_10y'] = _v10
     # 3b) BITCOIN — apetito de riesgo (PUNTO 34, 02/08/2026)
     # Valor diferencial: BTC cotiza 24/7, incluida la sesion del sabado y del domingo que
     # NINGUNA otra serie del scanner cubre. La ejecucion de la madrugada del lunes puede por
@@ -700,6 +744,11 @@ def _calc_macro_regimen():
         # un fallo silencioso de la descarga era indistinguible de un mercado tranquilo. Es el
         # mismo error que el P85 (dar el dato sin poder verlo) y el P84 (dar por bueno lo no
         # ejecutado). Ahora el resumen del log dice SIEMPRE en que estado esta el sensor.
+        if 'velocidad_10y' in reg:
+            _v = reg['velocidad_10y']
+            partes.append(f"10a {_v['nivel_pct']}% (z {_v['z']:+} a 1m)")
+        else:
+            partes.append("10a z sin dato (FRED no respondio)")
         if 'credito_oas' in reg:
             _o = reg['credito_oas']
             partes.append(f"OAS HY {_o['nivel_pb']}pb ({_o['chg_20s_pb']:+}pb/20s)")
@@ -3478,6 +3527,20 @@ def bloque_macro(data):
             macro_txt += (f'- ALERTA DE REGIMEN — WTI (petroleo): ${wti_r.get("nivel")} | '
                           f'{wti_r.get("chg_20s_pct"):+}% en 20 sesiones | '
                           f'{wti_r.get("chg_1d_pct"):+}% hoy{_texto_nivel_extremo(wti_r)}\n')
+        # P88 — velocidad del 10 anos: solo habla en el extremo.
+        v10 = reg.get('velocidad_10y', {})
+        if v10.get('alerta'):
+            _signo = 'SUBIDA' if v10['z'] > 0 else 'CAIDA'
+            macro_txt += (f'- ALERTA DE REGIMEN — VELOCIDAD DEL BONO A 10 ANOS: {v10["nivel_pct"]}% | '
+                          f'{v10["chg_1m_pb"]:+} pb en 1 mes | z-score {v10["z"]:+} frente a sus ultimos '
+                          f'3 anos (2 sigmas equivalen hoy a unos {v10["sigma_2_pb"]} pb). Es una {_signo} '
+                          'de tipos EXCEPCIONAL en velocidad, no en nivel: lo que la dispara es el ritmo '
+                          'del movimiento comparado con su propia historia reciente. Segun el estudio de '
+                          'referencia, la renta variable solo sufre de forma apreciable en este tramo '
+                          'extremo (mas de 2 sigmas); entre 1 y 2 sigmas el efecto es plano, asi que NO '
+                          'presentes esto como una escala gradual. Afecta a TODO el mercado a la vez, con '
+                          'mas dureza a los sectores de duracion larga. Describe el regimen, NO predice la '
+                          'proxima sesion.\n')
         # P86 — el OAS manda cuando esta disponible; HYG/IEF solo si FRED no respondio.
         oas = reg.get('credito_oas', {})
         if oas.get('alerta'):
