@@ -1,52 +1,108 @@
 # -*- coding: utf-8 -*-
-"""PUNTO 21 — El test mas importante del repo: paridad AST scanner.py <-> Celda 2.
+"""P89 (19/09/2026) — Este fichero ya NO comprueba paridad: comprueba que NO haya
+nada que emparejar.
 
-Los incidentes historicos de este proyecto (informes generados con codigo viejo)
-vinieron de desincronizar el notebook y el script. Este test convierte la
-verificacion manual de paridad en barrera automatica de CI: un push con los
-codebases desincronizados falla en rojo antes de llegar a produccion.
-Regla canonica: mismas funciones con cuerpos identicos en ambos; unicas
-exclusivas permitidas: main (solo scanner.py) y _get_secret (solo Celda 2).
+Hasta el P89, la Celda 2 duplicaba las ~5.200 lineas de scanner.py y este test
+verificaba que las dos copias fueran identicas. La duplicacion desaparecio: la
+Celda 2 descarga scanner.py del repo y lo ejecuta, asi que solo hay una fuente de
+verdad y la paridad es imposible de romper por construccion.
+
+Lo que queda por vigilar es que nadie deshaga ese cambio pegando codigo otra vez
+en el notebook, y que el mecanismo de carga conserve sus dos piezas criticas:
+la guarda de __name__ y el volcado de secretos ANTES del exec.
 """
 import ast, json
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-EXCLUSIVAS_SCANNER = {'main'}
-EXCLUSIVAS_NOTEBOOK = {'_get_secret'}
+NOTEBOOK = RAIZ / 'Scanner_Temas_V001.ipynb'
 
-def _funciones(src):
-    """Firma completa + defaults + cuerpo. La version anterior comparaba solo el cuerpo
-    (ast.Module(body=n.body)) y un cambio en un argumento por defecto — p. ej.
-    umbral_aviso=0.70 -> 0.65 — pasaba invisible: agujero detectado por test negativo
-    el 15/07/2026 y corregido comparando el nodo FunctionDef entero."""
-    arbol = ast.parse(src)
-    return {n.name: ast.dump(n, include_attributes=False)
-            for n in ast.walk(arbol)
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+# La Celda 4 es un espejo manual de main() y la cubre test_celda4_superficie.py.
+# Aqui solo interesa que ninguna celda vuelva a DEFINIR funciones del scanner.
+MAX_FUNCIONES_POR_CELDA = 0
 
-def _celda(nb, i):
-    return ''.join(nb['cells'][i]['source'])
 
-def test_paridad_ast_scanner_notebook():
-    scanner = (RAIZ / 'scanner.py').read_text()
-    nb = json.loads((RAIZ / 'Scanner_Temas_V001.ipynb').read_text())
-    a = _funciones(scanner)
-    b = _funciones(_celda(nb, 2))
-    comunes = set(a) & set(b)
-    distintas = sorted(f for f in comunes if a[f] != b[f])
-    assert not distintas, f'Cuerpos distintos entre scanner.py y Celda 2: {distintas}'
-    solo_scanner = set(a) - set(b)
-    solo_celda = set(b) - set(a)
-    assert solo_scanner == EXCLUSIVAS_SCANNER, f'Funciones inesperadas solo en scanner.py: {sorted(solo_scanner - EXCLUSIVAS_SCANNER)}'
-    assert solo_celda == EXCLUSIVAS_NOTEBOOK, f'Funciones inesperadas solo en Celda 2: {sorted(solo_celda - EXCLUSIVAS_NOTEBOOK)}'
-
-def test_todas_las_celdas_de_codigo_parsean():
-    nb = json.loads((RAIZ / 'Scanner_Temas_V001.ipynb').read_text())
+def _celdas_codigo():
+    nb = json.loads(NOTEBOOK.read_text(encoding='utf-8'))
     for i, c in enumerate(nb['cells']):
         if c.get('cell_type') == 'code':
-            src = ''.join(c['source'])
-            # las celdas Colab pueden llevar magics (!pip, %); se filtran lineas magicas
-            limpio = '\n'.join(l for l in src.splitlines()
-                               if not l.lstrip().startswith(('!', '%')))
-            ast.parse(limpio)  # lanza SyntaxError si la celda esta rota
+            yield i, ''.join(c['source'])
+
+
+def _sin_magics(src):
+    return '\n'.join(l for l in src.splitlines()
+                     if not l.lstrip().startswith(('!', '%')))
+
+
+def _celda_carga():
+    """La celda que descarga y ejecuta scanner.py."""
+    for i, src in _celdas_codigo():
+        if 'raw.githubusercontent.com' in src and 'exec(' in src:
+            return i, src
+    raise AssertionError('Ninguna celda descarga y ejecuta scanner.py: '
+                         'el notebook no sigue el modelo del P89')
+
+
+def test_el_notebook_no_duplica_codigo_del_scanner():
+    """Si alguien vuelve a pegar las definiciones en el notebook, reaparece el
+    problema que el P89 elimino: dos copias que se desincronizan en silencio."""
+    culpables = []
+    for i, src in _celdas_codigo():
+        try:
+            arbol = ast.parse(_sin_magics(src))
+        except SyntaxError:
+            continue
+        n = sum(1 for nodo in ast.walk(arbol)
+                if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)))
+        if n > MAX_FUNCIONES_POR_CELDA:
+            culpables.append('celda %d define %d funcion(es)' % (i, n))
+    assert not culpables, (
+        'El notebook vuelve a definir funciones; con el P89 debe limitarse a '
+        'descargar scanner.py: ' + '; '.join(culpables))
+
+
+def test_la_celda_de_carga_protege_el_arranque_de_main():
+    """scanner.py termina con `if __name__ == '__main__': main()` y en Colab
+    __name__ YA vale '__main__'. Sin reasignarlo antes del exec, abrir el
+    notebook lanzaria el pipeline entero sin que nadie lo pidiera."""
+    _, src = _celda_carga()
+    arbol = ast.parse(src)
+    # Ojo: NO vale buscar "__name__" en cualquier sitio. La propia celda lo LEE
+    # para restaurarlo despues (_nombre_previo = _g.get('__name__')), asi que hay
+    # que exigir que aparezca como DESTINO de una asignacion. Con la version laxa
+    # este test pasaba aunque se quitara la guarda (comprobado con test negativo).
+    # Hay que ser preciso: la celda toca __name__ TRES veces — lo lee para
+    # guardarlo, lo pone a un valor falso, y lo restaura. Solo la del medio es la
+    # guarda. Se exige una asignacion a __name__ cuyo valor sea una CADENA
+    # LITERAL distinta de '__main__' y que este ANTES del exec. Sin este nivel de
+    # detalle el test pasaba aunque se quitara la guarda (comprobado).
+    reasigna = any(
+        isinstance(n, ast.Assign)
+        and any('__name__' in ast.unparse(t) for t in n.targets)
+        and isinstance(n.value, ast.Constant)
+        and isinstance(n.value.value, str)
+        and n.value.value != '__main__'
+        and src.find(ast.unparse(n)) < src.find('exec(')
+        for n in ast.walk(arbol))
+    assert reasigna, (
+        'La celda de carga no reasigna __name__ antes de ejecutar scanner.py: '
+        'el pipeline arrancaria solo al abrir el notebook')
+
+
+def test_los_secretos_se_vuelcan_antes_de_ejecutar():
+    """scanner.py resuelve GITHUB_TOKEN, ANTHROPIC_KEY, etc. como constantes de
+    MODULO, es decir en el momento del exec. Si el volcado de Colab Secrets a
+    os.environ ocurriera despues, todas quedarian vacias."""
+    _, src = _celda_carga()
+    pos_exec = src.find('exec(')
+    for secreto in ('SCANNER_TOKEN', 'ANTHROPIC_KEY', 'TELEGRAM_TOKEN',
+                    'TELEGRAM_CHAT_ID', 'FMP_KEY'):
+        pos = src.find(secreto)
+        assert pos != -1, 'La celda de carga no vuelca el secreto %s' % secreto
+        assert pos < pos_exec, (
+            '%s se vuelca DESPUES del exec: scanner.py lo leeria vacio' % secreto)
+
+
+def test_todas_las_celdas_de_codigo_parsean():
+    for i, src in _celdas_codigo():
+        ast.parse(_sin_magics(src))

@@ -1,58 +1,36 @@
 # -*- coding: utf-8 -*-
+"""P89 (19/09/2026) — Reemplaza la paridad de constantes, que ya no tiene objeto.
+
+Este test nacio el 06/08 porque la watchlist, los umbrales y el calendario vivian
+DUPLICADOS en scanner.py y en el notebook, y quitar un ticker de un solo lado
+dejaba a Colab analizando algo que la Action ya no analizaba, con el CI en verde.
+
+Con el P89 esa duplicacion desaparece. Lo que queda es impedir que vuelva: si
+alguien define de nuevo en el notebook una constante que pertenece a scanner.py,
+esa definicion GANARIA sobre la del scanner si se ejecuta despues del exec, o
+seria pisada silenciosamente si se ejecuta antes. Las dos cosas son trampas.
 """
-tests/test_paridad_constantes.py
-
-PARIDAD DE CONSTANTES DE MODULO (06/08/2026)
-
-La paridad AST que vigila el CI compara FUNCIONES. Las asignaciones de nivel de
-modulo quedan fuera, y ahi viven cosas que cambian el comportamiento del scanner:
-la watchlist personal, los umbrales, el calendario macro, los universos.
-
-Se detecto al quitar el ticker ACRV: estaba tanto en scanner.py como en la celda de
-definiciones del notebook, y haberlo quitado solo de uno habria dejado a Colab
-analizando un valor que la Action ya no analiza — con el CI en verde, porque ninguna
-funcion habia cambiado.
-
-Comprobado el dia que se escribio este test: 20 constantes comunes, de las cuales
-solo difieren las cinco credenciales, y difieren A PROPOSITO porque cada entorno las
-lee de su propio origen (Colab Secrets frente a secrets de GitHub Actions).
-
-Este test NO impone que las dos definiciones sean identicas en todo: impone que lo
-sean en todo MENOS en esas cinco, y avisa si aparece una constante nueva solo en uno
-de los dos lados.
-"""
-
 import ast
 import json
 import os
-
-import pytest
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCANNER = os.path.join(RAIZ, 'scanner.py')
 NOTEBOOK = os.path.join(RAIZ, 'Scanner_Temas_V001.ipynb')
 
-# Difieren a proposito: cada entorno resuelve sus credenciales de otra forma.
-EXCEPCIONES = {
-    'ANTHROPIC_KEY', 'FMP_KEY', 'GITHUB_TOKEN',
-    'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID',
-}
+# Nombres de trabajo de la propia celda de carga, que no son configuracion del
+# scanner y por tanto no colisionan con nada.
+PERMITIDAS_EN_NOTEBOOK = {'RAMA', 'URL'}
 
 
-def _constantes(codigo):
-    """{NOMBRE: valor_desnormalizado} de las asignaciones de nivel de modulo.
-
-    Solo asignaciones simples a un unico nombre. Se comparan por su representacion
-    fuente (ast.unparse), que ignora comentarios y formato pero distingue cualquier
-    cambio real de valor.
-    """
-    arbol = ast.parse(codigo)
+def _constantes_de_modulo(codigo):
+    """{NOMBRE: fuente} de asignaciones simples de nivel superior en MAYUSCULAS."""
     salida = {}
-    for nodo in arbol.body:
+    for nodo in ast.parse(codigo).body:
         if not isinstance(nodo, ast.Assign) or len(nodo.targets) != 1:
             continue
         destino = nodo.targets[0]
-        if not isinstance(destino, ast.Name):
+        if not isinstance(destino, ast.Name) or not destino.id.isupper():
             continue
         try:
             salida[destino.id] = ast.unparse(nodo.value)
@@ -61,68 +39,46 @@ def _constantes(codigo):
     return salida
 
 
-def _celda_definiciones():
-    """Codigo de la celda que DEFINE las funciones del scanner.
-
-    Se localiza por contenido (la que define analyze_universe) y no por indice: al
-    eliminar la Celda 3 el 06/08/2026 todos los indices se desplazaron, y un test que
-    dependiera de ellos habria fallado por la razon equivocada.
-    """
+def _celdas_codigo():
     with open(NOTEBOOK, 'r', encoding='utf-8') as fh:
         nb = json.load(fh)
-    for celda in nb['cells']:
+    for i, celda in enumerate(nb['cells']):
         if celda.get('cell_type') != 'code':
             continue
-        src = ''.join(celda['source'])
+        src = '\n'.join(l for l in ''.join(celda['source']).splitlines()
+                        if not l.lstrip().startswith(('!', '%')))
         try:
-            arbol = ast.parse(src)
+            ast.parse(src)
         except SyntaxError:
             continue
-        definidas = {n.name for n in arbol.body if isinstance(n, ast.FunctionDef)}
-        if 'analyze_universe' in definidas:
-            return src
-    pytest.fail('No se encontro la celda que define analyze_universe')
+        yield i, src
 
 
-def test_constantes_comunes_coinciden():
-    """Una divergencia aqui significa que la Action y Colab analizan cosas distintas."""
-    en_scanner = _constantes(open(SCANNER, encoding='utf-8').read())
-    en_celda = _constantes(_celda_definiciones())
-    comunes = (set(en_scanner) & set(en_celda)) - EXCEPCIONES
-    assert comunes, 'No se detecto ninguna constante comun: revisar el extractor'
-    divergentes = sorted(k for k in comunes if en_scanner[k] != en_celda[k])
-    detalle = '\n  '.join(
-        '%s:\n    scanner.py: %s\n    notebook  : %s'
-        % (k, en_scanner[k][:200], en_celda[k][:200]) for k in divergentes)
-    assert not divergentes, (
-        'Constantes de modulo con valor distinto en scanner.py y en el notebook '
-        '(la paridad AST no las cubre):\n  ' + detalle)
+def test_el_notebook_no_redefine_constantes_del_scanner():
+    en_scanner = set(_constantes_de_modulo(open(SCANNER, encoding='utf-8').read()))
+    choques = []
+    for i, src in _celdas_codigo():
+        for nombre in _constantes_de_modulo(src):
+            if nombre in en_scanner:
+                choques.append('celda %d redefine %s' % (i, nombre))
+    assert not choques, (
+        'El notebook redefine constantes que pertenecen a scanner.py; segun el '
+        'orden de ejecucion una de las dos gana en silencio: ' + '; '.join(choques))
 
 
-def test_no_aparecen_constantes_solo_en_un_lado():
-    """Una constante nueva en un solo lado suele ser un espejo a medio aplicar."""
-    en_scanner = _constantes(open(SCANNER, encoding='utf-8').read())
-    en_celda = _constantes(_celda_definiciones())
-    solo_scanner = sorted(set(en_scanner) - set(en_celda) - EXCEPCIONES)
-    solo_celda = sorted(set(en_celda) - set(en_scanner) - EXCEPCIONES)
-    assert not solo_scanner, (
-        'Constantes definidas solo en scanner.py: %s. Anadelas al notebook o, si son '
-        'especificas del entorno, a EXCEPCIONES.' % solo_scanner)
-    assert not solo_celda, (
-        'Constantes definidas solo en el notebook: %s. Anadelas a scanner.py o, si son '
-        'especificas del entorno, a EXCEPCIONES.' % solo_celda)
+def test_las_constantes_del_notebook_son_solo_de_carga():
+    for i, src in _celdas_codigo():
+        ajenas = set(_constantes_de_modulo(src)) - PERMITIDAS_EN_NOTEBOOK
+        assert not ajenas, (
+            'La celda %d define constantes que no son del mecanismo de carga: %s. '
+            'La configuracion vive en scanner.py.' % (i, sorted(ajenas)))
 
 
-def test_las_excepciones_siguen_siendo_necesarias():
-    """Guardia del propio test: si una excepcion deja de divergir, sobra en la lista.
-
-    Evita que EXCEPCIONES crezca y acabe tapando divergencias reales.
-    """
-    en_scanner = _constantes(open(SCANNER, encoding='utf-8').read())
-    en_celda = _constantes(_celda_definiciones())
-    innecesarias = sorted(
-        k for k in EXCEPCIONES
-        if k in en_scanner and k in en_celda and en_scanner[k] == en_celda[k])
-    assert not innecesarias, (
-        'Estas constantes ya NO divergen, asi que sobran en EXCEPCIONES y estarian '
-        'tapando futuras divergencias: %s' % innecesarias)
+def test_scanner_sigue_teniendo_su_configuracion():
+    """Guardia inversa: si scanner.py se quedara sin constantes, los dos tests de
+    arriba pasarian trivialmente y no estarian comprobando nada."""
+    en_scanner = _constantes_de_modulo(open(SCANNER, encoding='utf-8').read())
+    assert 'PERSONAL_WATCHLIST' in en_scanner, 'scanner.py no define PERSONAL_WATCHLIST'
+    assert len(en_scanner) >= 15, (
+        'Solo %d constantes de modulo en scanner.py: revisar el extractor'
+        % len(en_scanner))
