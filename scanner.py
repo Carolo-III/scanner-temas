@@ -481,7 +481,71 @@ def _serie_fred(serie_id, dias=200):
         _traza('fred/descarga', e)
         return []
 
-def _calc_velocidad_10y():
+_FECHA_SESION_CURVA = {}   # P91 — fecha ISO de la sesion del panel, fijada en el bloque macro
+
+
+def _serie_fred_fechada(serie_id, dias=200):
+    """P91 (24/09/2026) — igual que _serie_fred pero devuelve [(fecha_iso, valor)].
+
+    Necesario para el empalme: sin la fecha del ultimo punto de FRED no hay forma de saber
+    que sesiones propias son POSTERIORES y deben anadirse.
+    """
+    url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={serie_id}'
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200:
+            _traza('fred/http', Exception(f'{serie_id} HTTP {r.status_code}'))
+            return []
+        pares = []
+        for linea in r.text.strip().splitlines()[1:]:
+            partes = linea.split(',')
+            if len(partes) < 2:
+                continue
+            try:
+                pares.append((partes[0].strip(), float(partes[-1].strip())))
+            except ValueError:
+                continue          # '.' de festivo o cabecera rara
+        return pares[-dias:]
+    except Exception as e:
+        _traza('fred/descarga', e)
+        return []
+
+
+def _serie_10y_empalmada(dias, nivel_hoy=None, fecha_hoy=None):
+    """P91 — historia larga de FRED + las sesiones propias que FRED aun no ha publicado.
+
+    MOTIVO (23/09/2026). El 23/09 el 10 anos salto ~15 pb (el 5 anos 15.5) en la sesion, y
+    el sensor de velocidad no se entero: se alimenta solo de FRED, que publica con uno o dos
+    dias de retraso, asi que su ultimo punto era el 4.96% del 22/09 mientras rates_history.json
+    ya tenia guardado el 5.114% del 23/09 y la cabecera del panel mostraba 5.11%. Un sensor de
+    SHOCK alimentado con datos de anteayer llega tarde justo el dia que hace falta.
+
+    Devuelve lista de valores (mas antiguo primero) y la procedencia del ultimo punto. Si
+    FRED falla devuelve ([], ...) y el llamador degrada exactamente como antes del P91: la
+    serie propia sola (157 sesiones) no basta para la referencia de 3 anos que exige el z.
+    """
+    pares = _serie_fred_fechada(FRED_DGS10, dias=dias)
+    if not pares:
+        return [], None, None
+    ultima_fred = pares[-1][0]
+    valores = [v for _f, v in pares]
+    fuente, fecha_ultimo = 'FRED', ultima_fred
+    # Sesiones propias posteriores a la ultima de FRED (rates_history ya filtra provisionales).
+    _nivel_hace_n_sesiones('us10y', 1)        # fuerza la carga del cache si aun no esta
+    for e in (_RATES_HIST_CACHE.get('entradas') or []):
+        _f = (e or {}).get('fecha')
+        _v = ((e or {}).get('niveles') or {}).get('us10y')
+        if _f and isinstance(_v, (int, float)) and _f > fecha_ultimo:
+            valores.append(float(_v))
+            fuente, fecha_ultimo = 'propia', _f
+    # Y la sesion de HOY, que todavia no esta escrita en rates_history en este punto.
+    if isinstance(nivel_hoy, (int, float)) and fecha_hoy and fecha_hoy > fecha_ultimo:
+        valores.append(float(nivel_hoy))
+        fuente, fecha_ultimo = 'panel', fecha_hoy
+    return valores, fuente, fecha_ultimo
+
+
+def _calc_velocidad_10y(nivel_hoy=None, fecha_hoy=None):
     """P88 — z-score del cambio a 1 mes del 10 anos frente a sus ultimos 3 anos.
 
     Devuelve dict o {}. Alerta SOLO por encima de UMBRAL_Z_10Y, sin niveles intermedios,
@@ -489,7 +553,7 @@ def _calc_velocidad_10y():
     diseno: una caida brusca de tipos tambien es un cambio de regimen, y el propio grafico
     muestra rendimiento negativo en el extremo de bajada fuerte (z < -2).
     """
-    serie = _serie_fred(FRED_DGS10, dias=VENTANA_Z_10Y)
+    serie, _fuente, _fecha_ult = _serie_10y_empalmada(VENTANA_Z_10Y, nivel_hoy, fecha_hoy)
     if len(serie) < 252:                      # menos de un ano: no hay referencia creible
         return {}
     cambios = [serie[i] - serie[i - 21] for i in range(21, len(serie))]
@@ -503,6 +567,8 @@ def _calc_velocidad_10y():
     actual = serie[-1] - serie[-22]
     z = round((actual - media) / sd, 2)
     return {'nivel_pct': round(serie[-1], 3),
+            'fuente_ultimo': _fuente,          # P91 — FRED | propia | panel
+            'fecha_ultimo': _fecha_ult,
             'chg_1m_pb': round(actual * 100, 1),
             'z': z,
             'sigma_2_pb': round(2 * sd * 100, 1),   # a cuantos pb equivalen 2 sigmas HOY
@@ -626,10 +692,6 @@ def _calc_macro_regimen():
     _oas = _calc_credito_oas()
     if _oas:
         reg['credito_oas'] = _oas
-    # P88 — velocidad del 10 anos. Instrumentacion: NO toca score, RIESGO ni RANKING.
-    _v10 = _calc_velocidad_10y()
-    if _v10:
-        reg['velocidad_10y'] = _v10
     # 3b) BITCOIN — apetito de riesgo (PUNTO 34, 02/08/2026)
     # Valor diferencial: BTC cotiza 24/7, incluida la sesion del sabado y del domingo que
     # NINGUNA otra serie del scanner cubre. La ejecucion de la madrugada del lunes puede por
@@ -680,6 +742,12 @@ def _calc_macro_regimen():
         serie = _serie(tk, minimo=1)
         if len(serie) < 1:
             continue
+        if clave == 'us10y':
+            # P91 — fecha del ultimo punto descargado, para saber si es posterior a FRED.
+            try:
+                _FECHA_SESION_CURVA['fecha'] = str(pd.Timestamp(serie.index[-1]).date())
+            except Exception as _e:
+                _traza('regimen/fecha-sesion-curva', _e)
         vals = serie.values.astype(float)
         if vals[-1] > 20: vals = vals / 10  # misma guarda de decimas que us30y
         curva_niveles[clave] = round(float(vals[-1]), 3)
@@ -693,6 +761,12 @@ def _calc_macro_regimen():
                 _var_historico.append(clave)
             else:
                 _sin_variacion.append(f'{clave}({len(vals)})')
+    # P88 — velocidad del 10 anos. Instrumentacion: NO toca score, RIESGO ni RANKING.
+    # P91 — se calcula AQUI, despues de la curva, para poder empalmar el nivel de hoy
+    # (^TNX del panel), que es justo el que FRED aun no ha publicado.
+    _v10 = _calc_velocidad_10y(curva_niveles.get('us10y'), _FECHA_SESION_CURVA.get('fecha'))
+    if _v10:
+        reg['velocidad_10y'] = _v10
     if curva_niveles:
         _pend = calc_pendientes_curva(curva_niveles)
         reg['curva'] = {'niveles': curva_niveles, 'variacion_20s_pb': curva_var,
@@ -746,12 +820,21 @@ def _calc_macro_regimen():
         # ejecutado). Ahora el resumen del log dice SIEMPRE en que estado esta el sensor.
         if 'velocidad_10y' in reg:
             _v = reg['velocidad_10y']
-            partes.append(f"10a {_v['nivel_pct']}% (z {_v['z']:+} a 1m)")
+            partes.append(f"10a {_v['nivel_pct']}% (z {_v['z']:+} a 1m, ultimo "
+                          f"{_v.get('fecha_ultimo','?')} via {_v.get('fuente_ultimo','?')})")
         else:
             partes.append("10a z sin dato (FRED no respondio)")
         if 'credito_oas' in reg:
             _o = reg['credito_oas']
             partes.append(f"OAS HY {_o['nivel_pb']}pb ({_o['chg_20s_pb']:+}pb/20s)")
+            # P90 (22/09/2026) — el OAS IG se descargaba y persistia desde el P86 pero no salia
+            # en ningun sitio visible: no tiene alerta propia y solo viajaba dentro de la linea
+            # de alerta HY. El 22/09 un analisis externo hablaba de IG ampliandose y no habia
+            # forma de contrastarlo sin abrir data.json (el dato real: 77pb, -4pb/20s).
+            if _o.get('ig_nivel_pb') is not None:
+                partes.append(f"OAS IG {_o['ig_nivel_pb']}pb ({_o['ig_chg_20s_pb']:+}pb/20s)")
+            else:
+                partes.append("OAS IG sin dato")
         else:
             partes.append("OAS HY sin dato (FRED no respondio, se usa HYG/IEF)")
         if 'btc' in reg:
@@ -2227,6 +2310,9 @@ def anotar_tendencia_en_breadth(breadth, macro, ts):
     """
     if not isinstance(breadth, dict):
         return breadth
+    # P90 — la fecha de sesion se anota SIEMPRE (antes de leer GitHub): la usa el aviso de
+    # vencimiento trimestral, que no debe depender de que la lectura del historial funcione.
+    breadth['fecha_sesion'] = construir_entrada_breadth({}, macro, ts).get('fecha')
     bh, _ = get_github_file('breadth_history.json')
     if bh == '__ERROR__' or not isinstance(bh, list):
         return breadth
@@ -2244,6 +2330,15 @@ def anotar_tendencia_en_breadth(breadth, macro, ts):
     serie_mcc = [e.get('mcclellan') for e in previas] + [breadth.get('mcclellan')]
     dir_d, ses_d = calcular_tendencia(serie_disp)
     dir_m, ses_m = calcular_tendencia(serie_mcc)
+    # P90 (22/09/2026) — VARIACION de la amplitud frente a la sesion previa. El 21/09 el
+    # informe hablo de "deterioro" con la amplitud MEJORANDO frente al 18/09 (MM20 20.5->27.9,
+    # McClellan -47->-26.5, minimos 24->19): veia la foto, no el cambio. Solo si la previa es
+    # un cierre y trae los campos; si no, no se anota nada.
+    _prev = previas[-1] if previas else None
+    if _prev and _prev.get('es_cierre'):
+        breadth['previa'] = {k: _prev.get(k) for k in
+                             ('fecha', 'pct_sobre_mm20', 'pct_sobre_mm50', 'pct_sobre_mm200',
+                              'mcclellan', 'nuevos_max_52s', 'nuevos_min_52s')}
     if ses_d or ses_m:
         breadth['tendencia'] = {'dispersion': dir_d, 'sesiones_dispersion': ses_d,
                                 'mcclellan': dir_m, 'sesiones_mcclellan': ses_m}
@@ -2379,13 +2474,33 @@ def _texto_putcall():
     txt = ('PUT/CALL DE CBOE (sentimiento de opciones, sesion anterior):\n'
            '- ' + ' | '.join(f'{k}={v}' for k, v in sorted(actual.items())) + '\n')
     eq = actual.get('equity')
-    if eq is not None:
+    hist = [e for e in (_PUTCALL_CACHE.get('historial') or []) if e.get('equity') is not None]
+    # P90 (22/09/2026) — con percentil disponible, la CALIFICACION del nivel sale del percentil
+    # y se resuelve aqui. El 21/09 el informe llamo "complacencia todavia dominante" a un
+    # percentil 52: la etiqueta absoluta del bloque ("ratio BAJO = complacencia") ganaba al
+    # percentil. Sin percentil, se mantiene la lectura de escala con su prohibicion de calificar.
+    _pct_pc = None
+    if eq is not None and len(hist) >= MIN_SESIONES_PUTCALL:
+        _serie_pc = [e['equity'] for e in hist]
+        _pct_pc = round(100.0 * sum(1 for v in _serie_pc if v <= eq) / len(_serie_pc), 1)
+    if eq is not None and _pct_pc is not None:
+        if _pct_pc <= 25:
+            _cal = 'COMPLACENCIA relativa (ratio en el cuartil bajo de su propia serie)'
+        elif _pct_pc >= 75:
+            _cal = 'MIEDO relativo (ratio en el cuartil alto de su propia serie)'
+        else:
+            _cal = ('NEUTRAL: ni complacencia ni miedo frente a su propia serie. Tienes PROHIBIDO '
+                    'llamarlo complacencia o miedo')
+        txt += (f'- EQUITY put/call = {eq}. Termometro de sentimiento MINORISTA (INDEX y SPX estan '
+                f'contaminados por coberturas institucionales). CALIFICACION DEL NIVEL, resuelta por '
+                f'percentil: {_cal}. Usa esta calificacion TAL CUAL y no la sustituyas por la escala '
+                f'absoluta. Es un indicador CONTRARIO, no una señal de entrada.\n')
+    elif eq is not None:
         txt += (f'- EQUITY put/call = {eq}. Es el termometro de sentimiento MINORISTA y el unico '
                 'de la lista que conviene interpretar: INDEX y SPX estan contaminados por '
                 'coberturas institucionales. Lectura: ratio BAJO = pocas puts por cada call = '
                 'COMPLACENCIA/apetito de riesgo; ratio ALTO = MIEDO. Es un indicador de '
                 'sentimiento CONTRARIO, no una señal de entrada.\n')
-    hist = [e for e in (_PUTCALL_CACHE.get('historial') or []) if e.get('equity') is not None]
     # P87 (15/09/2026) — VARIACION frente a la sesion anterior. El bloque solo daba el NIVEL,
     # y el 11/09 el informe describio 0.67 como "complacencia" sin notar que venia de 0.48:
     # un salto fuerte hacia el MIEDO en una sola sesion, que era la informacion util del dia.
@@ -2401,9 +2516,9 @@ def _texto_putcall():
             _dir = 'no cambia'
         txt += (f'- Variacion frente a la sesion anterior ({_prev}): {_delta:+}. El ratio {_dir}. '
                 'La DIRECCION es interpretable aunque la serie sea corta; el nivel no siempre.\n')
-    if eq is not None and len(hist) >= MIN_SESIONES_PUTCALL:
+    if _pct_pc is not None:
         serie = [e['equity'] for e in hist]
-        pct = round(100.0 * sum(1 for v in serie if v <= eq) / len(serie), 1)
+        pct = _pct_pc
         txt += (f'- Contexto: percentil {pct} de las ultimas {len(serie)} sesiones registradas '
                 f'(minimo {min(serie)}, maximo {max(serie)}). Con percentil disponible, CITALO en el '
                 'informe en lugar de limitarte a describir el nivel.\n')
@@ -3672,8 +3787,56 @@ def bloque_amplitud(data):
                 f'- CONTEXTO TEMPORAL: {_mcc}. USA ESTE DATO: di si la amplitud es una '
                 f'situacion NUEVA o SOSTENIDA, en vez de describir la cifra del dia como si fuera '
                 f'informacion nueva. Es descripcion del pasado, NO prediccion.\n')
+        # P90 — variacion frente a la sesion previa, con la direccion resuelta aqui.
+        _pv = breadth.get('previa') or {}
+        _cambios = []
+        for _k, _et in (('pct_sobre_mm20', '% sobre MM20'), ('pct_sobre_mm50', '% sobre MM50'),
+                        ('pct_sobre_mm200', '% sobre MM200'), ('mcclellan', 'McClellan'),
+                        ('nuevos_max_52s', 'nuevos maximos'), ('nuevos_min_52s', 'nuevos minimos')):
+            _a, _b = _pv.get(_k), breadth.get(_k)
+            if isinstance(_a, (int, float)) and isinstance(_b, (int, float)):
+                _cambios.append(f'{_et} {_a} -> {_b}')
+        if _cambios:
+            _mej = sum(1 for _k in ('pct_sobre_mm20', 'pct_sobre_mm50', 'mcclellan')
+                       if isinstance(_pv.get(_k), (int, float)) and isinstance(breadth.get(_k), (int, float))
+                       and breadth[_k] > _pv[_k])
+            _emp = sum(1 for _k in ('pct_sobre_mm20', 'pct_sobre_mm50', 'mcclellan')
+                       if isinstance(_pv.get(_k), (int, float)) and isinstance(breadth.get(_k), (int, float))
+                       and breadth[_k] < _pv[_k])
+            if _mej == 3:
+                _dir_amp = 'la amplitud MEJORA frente a la sesion previa en sus tres medidas rapidas'
+            elif _emp == 3:
+                _dir_amp = 'la amplitud EMPEORA frente a la sesion previa en sus tres medidas rapidas'
+            else:
+                _dir_amp = 'la amplitud da señales MIXTAS frente a la sesion previa'
+            breadth_txt += (f'- VARIACION FRENTE A LA SESION PREVIA ({_pv.get("fecha")}): '
+                            f'{"; ".join(_cambios)}. Lectura: {_dir_amp}. Distingue NIVEL y '
+                            f'DIRECCION: una amplitud debil que mejora NO es "deterioro"; describe '
+                            f'ambas cosas y no llames deterioro a lo que es un nivel bajo en '
+                            f'recuperacion. Usa esta lectura TAL CUAL.\n')
+        # P90 — aviso de vencimiento trimestral (triple witching). El 18/09 el RVOL de los
+        # setups (DVN 3.65x, TXN 3.48x) salia de rolo y cierre de posiciones, y el informe lo
+        # leyo como conviccion institucional. DVN toco stop a la sesion siguiente.
+        if es_vencimiento_trimestral(breadth.get('fecha_sesion')):
+            breadth_txt += ('- AVISO VENCIMIENTO TRIMESTRAL: la sesion analizada es el tercer viernes de '
+                            'marzo/junio/septiembre/diciembre (vencimiento trimestral de opciones y '
+                            'futuros). El volumen de esta sesion esta inflado por rolo y cierre de '
+                            'posiciones: un RVOL alto HOY NO es conviccion institucional ni confirma una '
+                            'ruptura. En cada setup cuyo argumento se apoye en el RVOL, dilo '
+                            'explicitamente y no uses el volumen como confirmacion.\n')
         breadth_txt += '\n'
     return breadth_txt
+
+
+def es_vencimiento_trimestral(fecha_iso):
+    """P90 — True si fecha_iso (AAAA-MM-DD) es el tercer viernes de mar/jun/sep/dic."""
+    try:
+        f = pd.Timestamp(fecha_iso)
+    except Exception:
+        return False
+    if pd.isna(f):
+        return False
+    return f.month in (3, 6, 9, 12) and f.weekday() == 4 and 15 <= f.day <= 21
 
 
 def bloque_seguimiento(data):
@@ -4244,7 +4407,7 @@ def construir_prompt(data, externos=None):
         'PUNTO 8 — AMPLITUD DE MERCADO: si el bloque AMPLITUD DE MERCADO aparece en los datos, usalo en la seccion MERCADO para matizar el regimen general (SPY>MM200 es una sola variable; la amplitud dice si ese movimiento esta respaldado por la mayoria de valores o solo por unos pocos). Interpreta los datos asi: % sobre MM50/MM200 por debajo del 50% mientras el SPY esta alcista indica un "rally estrecho" (pocos valores liderando, mercado fragil bajo la superficie); % por encima del 60-70% indica amplitud sana. Si nuevos minimos de 52 semanas superan a los nuevos maximos, es una señal de deterioro interno aunque el indice general suba. Esta informacion es CONTEXTO, no debe usarse para invalidar ni recalcular el RIESGO de los setups individuales (que depende solo de SCT/RSI/CMF/ADX del valor) — su unico rol es matizar la lectura del regimen de mercado en la seccion 1 y, si aplica, dar contenido especifico y verificable al punto de "deterioro de amplitud de mercado" en RIESGOS DEL ESCENARIO en lugar de mencionarlo de forma generica. '
         'ALERTAS DE REGIMEN MACRO: las lineas "ALERTA DE REGIMEN" solo aparecen en los datos cuando un umbral de VELOCIDAD se ha disparado (US30Y: ±25 pb en 20 sesiones o cruce del 5.00%; WTI: ±10% en 20 sesiones; CREDITO: el diferencial OAS high-yield de ICE BofA ampliandose 50 pb o mas en 20 sesiones, o en nivel extremo — es el sensor adelantado de aversion al riesgo mas fiable de este bloque, porque el credito suele estresarse antes que la renta variable; si FRED no responde se usa como respaldo el ratio HYG/IEF, que cae cuando el credito se tensiona, es decir con el signo CONTRARIO al del OAS — usa en cada caso la lectura de direccion que venga escrita en la propia linea de alerta y no la deduzcas tu). Si aparecen, integralas en la seccion 1 (MERCADO) y en RIESGOS DEL ESCENARIO aplicando el mapa de transmision sectorial: tipos largos subiendo con fuerza presionan los sectores de duracion larga (biotech sin beneficios, tecnologia de multiplo alto) y favorecen relativamente a las financieras; petroleo subiendo con fuerza favorece a energia y presiona a transporte, aerolineas y consumo discrecional; credito tensionandose da mas valor relativo a los setups de calidad y defensivos (utilities, telecos, salud, basicos) frente a los de beta alta. Usa el mapa para contextualizar los setups del dia cuando la alerta afecte a sus sectores, sin forzarlo cuando no aplique. Cada linea trae DOS ventanas: el cambio en 20 sesiones (el regimen) y el cambio de hoy (la tactica del dia) — pueden divergir (ej.: crudo cayendo un 20% en el mes pero repuntando hoy por geopolitica) y en ese caso debes reflejar ambas, con el regimen como lectura principal y el movimiento del dia como matiz. Estas alertas describen el REGIMEN actual, no predicen la proxima sesion: nunca las conviertas en pronosticos. Si NO aparece ninguna linea de ALERTA DE REGIMEN, tienes PROHIBIDO mencionar el bono a 30 años, el petroleo o el credito high-yield en el informe — ni siquiera para decir que estan estables o sin cambios: el silencio es la señal de normalidad y el comentario macro de relleno esta prohibido. '
         'ESTRUCTURA DE INDICES (MM50): la linea "ESTRUCTURA DE INDICES" solo aparece cuando el SPY o el QQQ han cruzado su media movil de 50 sesiones recientemente o estan testandola (±1%). Es contexto TACTICO de corto plazo, distinto del regimen (que sigue siendo la MM200): un indice rebotando en su MM50 con la MM200 alcista es una correccion normal dentro de tendencia; un indice bajo su MM50 durante muchas sesiones indica que el tramo tactico es debil aunque el regimen aguante. Integralo en la seccion 1 (MERCADO) en una o dos frases, y conectalo con los setups del dia cuando aplique (ej.: si los setups son pullbacks a MM50 individuales el mismo dia que el indice testa la suya, es una correccion sincronizada de mercado — nombrable como contexto, ni mejor ni peor per se). Si la linea NO aparece, tienes PROHIBIDO mencionar las medias de 50 sesiones de los indices — el silencio es normalidad. Nunca lo conviertas en pronostico. '
-        'PUNTO 10 — SEGUIMIENTO CMF + SUPERTREND: si aparece el bloque "SEGUIMIENTO — ALERTAS" en los datos, anyadelo como una seccion separada ENTRE la seccion 4 (EXTENDIDOS) y la CONCLUSION, titulada exactamente "SEGUIMIENTO DE POSICIONES ABIERTAS". Distingue claramente DOS niveles de urgencia, nunca los trates igual: (A) si un ticker lleva la marca "CMF NEGATIVO N SESIONES CONSECUTIVAS", es una señal blanda pero ya CONFIRMADA: no es un mal dia aislado, el flujo lleva N sesiones seguidas en terreno vendedor (distribucion sostenida) — la regla es valorar reducir el tamaño de la posicion a la mitad hasta que el CMF recupere terreno positivo. Cuanto mayor sea N, mas asentada esta la distribucion, pero la REGLA OPERATIVA ES LA MISMA para todas las alertas blandas independientemente de N: valorar reducir al 50%. NUNCA degrades las rachas cortas (3-5 sesiones) a "vigilar sin reducir" ni inventes niveles intermedios de urgencia dentro de las blandas — si una alerta aparece en los datos es porque ya cumple el minimo de confirmacion del sistema, y las rachas cortas en posiciones muy ganadoras son precisamente los giros de flujo mas frescos y accionables, no los menos urgentes. (B) si un ticker lleva la marca SUPERTREND BAJISTA, es una señal dura y mas urgente: el precio ya ha cruzado por debajo del nivel dinamico de Supertrend (indicado en la marca), lo que significa que la estructura de tendencia que sostenia el setup ya se ha roto — no es "vigilar", es una señal de salida total de la posicion, mas decisiva que la alerta CMF. Las señales son EXCLUYENTES por diseño: la dura absorbe a la blanda (nunca veras ambas en el mismo ticker, y nunca debes sugerir a la vez "reducir 50%" y "salida total" para un mismo valor). Ademas, AMBOS tipos de alerta corresponden UNICAMENTE a condiciones surgidas DESPUES de la entrada del setup: las rupturas Supertrend son posteriores a la entrada, y las rachas de CMF negativo empezaron tras la entrada — los setups que ya nacieron con el Supertrend bajista o con el CMF en negativo no generan alerta (no tiene sentido "salir" o "reducir" por una condicion que ya existia al entrar), asi que toda alerta que veas es un deterioro genuinamente nuevo sobre la posicion. Dentro del caso (B) los datos distinguen DOS variantes que NUNCA debes redactar igual: "SUPERTREND BAJISTA NUEVO — ruptura de esta sesion" significa que la direccion ha cambiado a bajista precisamente en la sesion mas reciente — es el caso mas urgente de actuar y puedes redactarlo como ruptura del dia ("ha cruzado por debajo..."). "SUPERTREND BAJISTA PERSISTENTE desde hace N sesiones" significa que la ruptura NO es de hoy: lleva N sesiones activa y el precio simplemente no ha recuperado el nivel necesario para revertirla — NUNCA lo redactes como si la ruptura acabara de producirse; indica explicitamente desde cuando esta rota la tendencia ("Supertrend bajista desde hace N sesiones") y ajusta el framing: la decision de salida ya deberia haberse tomado en su momento, la mencion actual es un recordatorio de que la estructura sigue rota, no una alerta urgente de esta sesion. Un dia con subida fuerte puede coexistir con Supertrend bajista persistente si el cierre no ha cruzado el nivel indicado — no lo presentes como contradiccion, es el diseño del indicador. Si hay mas de 10 alertas en total, agrupa: menciona primero los casos con SUPERTREND BAJISTA (los mas urgentes, hasta 5), luego los 3-5 casos de CMF mas relevantes por retorno, y resume el resto en una frase tipo "otros N valores con distribucion confirmada — misma regla de reduccion al 50%". Cita siempre el retorno actual (ret_pct). Si no hay alertas, no incluyas esta seccion. Seccion operativa, no analitica. '
+        'PUNTO 10 — SEGUIMIENTO CMF + SUPERTREND: si aparece el bloque "SEGUIMIENTO — ALERTAS" en los datos, anyadelo como una seccion separada ENTRE la seccion 4 (EXTENDIDOS) y la CONCLUSION, titulada exactamente "SEGUIMIENTO DE POSICIONES ABIERTAS". Distingue claramente DOS niveles de urgencia, nunca los trates igual: (A) si un ticker lleva la marca "CMF NEGATIVO N SESIONES CONSECUTIVAS", es una señal blanda pero ya CONFIRMADA: no es un mal dia aislado, el flujo lleva N sesiones seguidas en terreno vendedor (distribucion sostenida) — la regla es valorar reducir el tamaño de la posicion a la mitad hasta que el CMF recupere terreno positivo. Cuanto mayor sea N, mas asentada esta la distribucion, pero la REGLA OPERATIVA ES LA MISMA para todas las alertas blandas independientemente de N: valorar reducir al 50%. NUNCA degrades las rachas cortas (3-5 sesiones) a "vigilar sin reducir" ni inventes niveles intermedios de urgencia dentro de las blandas — si una alerta aparece en los datos es porque ya cumple el minimo de confirmacion del sistema, y las rachas cortas en posiciones muy ganadoras son precisamente los giros de flujo mas frescos y accionables, no los menos urgentes. (B) si un ticker lleva la marca SUPERTREND BAJISTA, es una señal dura y mas urgente: el precio cotiza por debajo del nivel de Supertrend VIGENTE (indicado en la marca), lo que significa que la estructura de tendencia que sostenia el setup ya se ha roto — no es "vigilar", es una señal de salida total de la posicion, mas decisiva que la alerta CMF. Las señales son EXCLUYENTES por diseño: la dura absorbe a la blanda (nunca veras ambas en el mismo ticker, y nunca debes sugerir a la vez "reducir 50%" y "salida total" para un mismo valor). Ademas, AMBOS tipos de alerta corresponden UNICAMENTE a condiciones surgidas DESPUES de la entrada del setup: las rupturas Supertrend son posteriores a la entrada, y las rachas de CMF negativo empezaron tras la entrada — los setups que ya nacieron con el Supertrend bajista o con el CMF en negativo no generan alerta (no tiene sentido "salir" o "reducir" por una condicion que ya existia al entrar), asi que toda alerta que veas es un deterioro genuinamente nuevo sobre la posicion. Dentro del caso (B) los datos distinguen DOS variantes que NUNCA debes redactar igual: "SUPERTREND BAJISTA NUEVO — ruptura de esta sesion" significa que la direccion ha cambiado a bajista precisamente en la sesion mas reciente — es el caso mas urgente de actuar y puedes redactarlo como ruptura del dia ("ha cruzado por debajo..."). "SUPERTREND BAJISTA PERSISTENTE desde hace N sesiones" significa que la ruptura NO es de hoy: lleva N sesiones activa y el precio simplemente no ha recuperado el nivel necesario para revertirla — NUNCA lo redactes como si la ruptura acabara de producirse; indica explicitamente desde cuando esta rota la tendencia ("Supertrend bajista desde hace N sesiones") y ajusta el framing: la decision de salida ya deberia haberse tomado en su momento, la mencion actual es un recordatorio de que la estructura sigue rota, no una alerta urgente de esta sesion. ATENCION AL NIVEL (P90): el nivel de la marca es el Supertrend VIGENTE hoy, que en tendencia bajista se desplaza cada sesion; NO es el precio al que se produjo la ruptura. En los casos PERSISTENTES tienes PROHIBIDO escribir "ha cruzado por debajo de $X" o "el precio ha cruzado por debajo del nivel dinamico": redactalo como "cotiza por debajo de su Supertrend vigente ($X)". Un dia con subida fuerte puede coexistir con Supertrend bajista persistente si el cierre no ha cruzado el nivel indicado — no lo presentes como contradiccion, es el diseño del indicador. Si hay mas de 10 alertas en total, agrupa: menciona primero los casos con SUPERTREND BAJISTA (los mas urgentes, hasta 5), luego los 3-5 casos de CMF mas relevantes por retorno, y resume el resto en una frase tipo "otros N valores con distribucion confirmada — misma regla de reduccion al 50%". Cita siempre el retorno actual (ret_pct). Si no hay alertas, no incluyas esta seccion. Seccion operativa, no analitica. '
         'Escribe cada seccion de forma que sea comprensible tanto para un analista tecnico como para un inversor adulto con conocimientos generales de bolsa pero sin experiencia en analisis tecnico. '
         'No uses parrafos separados ni marcadores especiales para las explicaciones: integra el contexto y el significado directamente en el texto de cada seccion. '
         'Cuando menciones un indicador tecnico (RSI, ADX, SCT, CMF, MM50, etc.) explica brevemente en la misma frase que implica ese valor concreto para la decision. '
@@ -4280,7 +4443,7 @@ def construir_prompt(data, externos=None):
         'PUNTO 17 — CORRELACION ENTRE CANDIDATOS: si aparece el bloque CORRELACION ENTRE CANDIDATOS, usalo para evaluar la CARTERA como conjunto, no cada idea aislada. Correlacion >=0.70 entre dos candidatos significa que en la practica son una sola apuesta con dos nombres: si ambos se toman, la diversificacion real es menor de lo que aparenta y una misma sorpresa macro (tipos, growth, sector) golpea a la vez a ambos. Las betas indican la sensibilidad de cada candidato al mercado: beta agregada alta = cartera que amplifica al SPY. Integra esta lectura en un parrafo breve dentro de la CONCLUSION (o en RIESGOS DEL ESCENARIO si hay AVISO CONCENTRACION), nombrando los pares concretos y su correlacion. Si hay CONCENTRACION SECTORIAL (dos o mas candidatos del mismo tema), menciona que comparten motor sectorial. Esta informacion es CONTEXTO DE CARTERA: NO invalida ni recalcula el RIESGO ni el RANKING individual de ningun setup, y NO debe usarse para descartar candidatos — solo para advertir sobre tomarlos simultaneamente y sugerir, si aplica, dimensionar posiciones considerando la correlacion. Si el bloque no aparece, no menciones correlaciones. '
         'PUNTO 18 — PULLBACK EN SOBRECOMPRA: si un setup lleva la marca AVISO: PULLBACK CON RSI EN SOBRECOMPRA, significa que el valor cotiza cerca de su media movil de referencia PERO su RSI sigue >=70: el retroceso ha sido tan superficial que no ha aliviado la sobrecompra, por lo que hablar de "pullback de calidad" no es convincente. Redactalo con ese matiz explicito (retroceso minimo, momentum aun sobrecalentado, mayor probabilidad de que la correccion no haya terminado) y evita presentarlo como una entrada de libro en soporte. La marca NO cambia el RIESGO ni el RANKING calculados — es un matiz de calidad del setup que el lector debe conocer. Si ningun setup lleva la marca, no menciones este concepto. '
         'PUNTO 19/31 — DESGLOSE DEL RANKING: cada setup incluye junto al RANKING su desglose entre parentesis (SCT x/40 + R/B x/20 + sector x/20 + CMF x/20; los cuatro componentes suman exactamente el ranking). El componente SECTOR (hasta 20 puntos) refleja desde el 01/08/2026 el % de valores del sector que cotizan sobre su MM200: un sector donde el 80% de sus miembros estan sobre la MM200 puntua 16/20 (0.80 × 20); el componente es una medida de fortaleza estructural del sector, no de calidad tecnica individual. Usalo cuando compares candidatos entre si: un setup con sector x/20 alto tiene el viento del sector de cola; uno con sector bajo compite contra corriente. No recites el desglose completo de cada setup — usalo para fundamentar comparaciones concretas. NUNCA inventes pesos ni componentes distintos de los cuatro dados. '
-        'PUNTO 21 — PUT/CALL DE CBOE: si aparece el bloque PUT/CALL DE CBOE, integra el ratio EQUITY en la lectura de mercado de la seccion 1, en una frase, junto a la amplitud y al VIX: son las tres piezas del estado interno del mercado. Es un indicador de sentimiento CONTRARIO y de CONTEXTO: describe el clima, no genera ni modifica setups, y NUNCA recalcula el RIESGO ni el RANKING de nadie. Usa la lectura de direccion tal y como viene resuelta en el bloque y no la deduzcas tu. Si el bloque avisa de que la serie propia es demasiado corta para dar contexto historico, tienes PROHIBIDO calificar el valor de alto, bajo, extremo, historico o inusual, y tambien compararlo con periodos que no esten en los datos: limitate a decir el nivel y lo que significa su direccion. PERO si el bloque SI trae la linea de percentil, es OBLIGATORIO citarlo: el percentil es lo unico que permite situar el valor de hoy, y describir el nivel sin el desaprovecha el dato. Cita tambien la VARIACION frente a la sesion anterior cuando aparezca, con la direccion tal y como viene escrita: un salto grande en una sola sesion suele ser mas informativo que el nivel, y un ratio que SUBE es sentimiento moviendose hacia el miedo aunque el nivel siga siendo bajo. Cuando el sentimiento contradiga a la amplitud (por ejemplo complacencia en opciones con amplitud deteriorandose), señalalo: esa divergencia es justo lo que aporta el indicador. Si el bloque no aparece, no menciones put/call ni sentimiento de opciones. '
+        'PUNTO 21 — PUT/CALL DE CBOE: si aparece el bloque PUT/CALL DE CBOE, integra el ratio EQUITY en la lectura de mercado de la seccion 1, en una frase, junto a la amplitud y al VIX: son las tres piezas del estado interno del mercado. Es un indicador de sentimiento CONTRARIO y de CONTEXTO: describe el clima, no genera ni modifica setups, y NUNCA recalcula el RIESGO ni el RANKING de nadie. Usa la lectura de direccion tal y como viene resuelta en el bloque y no la deduzcas tu. Si el bloque avisa de que la serie propia es demasiado corta para dar contexto historico, tienes PROHIBIDO calificar el valor de alto, bajo, extremo, historico o inusual, y tambien compararlo con periodos que no esten en los datos: limitate a decir el nivel y lo que significa su direccion. PERO si el bloque SI trae la linea de percentil, es OBLIGATORIO citarlo: el percentil es lo unico que permite situar el valor de hoy, y describir el nivel sin el desaprovecha el dato. Cita tambien la VARIACION frente a la sesion anterior cuando aparezca, con la direccion tal y como viene escrita: un salto grande en una sola sesion suele ser mas informativo que el nivel, y un ratio que SUBE es sentimiento moviendose hacia el miedo aunque el nivel siga siendo bajo. Cuando el sentimiento contradiga a la amplitud (por ejemplo complacencia en opciones con amplitud deteriorandose), señalalo — pero SOLO si la calificacion del bloque dice COMPLACENCIA o MIEDO; con calificacion NEUTRAL no hay divergencia de sentimiento que señalar: esa divergencia es justo lo que aporta el indicador. Si el bloque no aparece, no menciones put/call ni sentimiento de opciones. '
         'PUNTO 20 — AMPLITUD TACTICA (MM20 y McClellan): el % sobre MM20 es la version rapida de la amplitud — reacciona en dias, no en semanas: si es claramente inferior al % sobre MM50, la participacion de corto plazo se esta enfriando aunque la estructura de fondo aguante; si lo supera con claridad, hay reaceleracion tactica. El McClellan Oscillator (ratio-adjusted) mide el MOMENTO de la amplitud: positivo = el empuje neto comprador domina, negativo = domina el vendedor, y el cruce de 0 marca el giro; lecturas mas alla de aproximadamente +/-50 indican empuje amplio posiblemente sobreextendido a corto plazo (no es señal operativa, es contexto). Integra ambos en la lectura de AMPLITUD DE MERCADO de la seccion 1 (una o dos frases), coherente con el resto de metricas de amplitud: divergencias entre la amplitud rapida (MM20/McClellan) y la lenta (MM50/MM200) son el matiz mas valioso que puedes señalar. NO recalcules ni modules el RIESGO de setups individuales con estos datos. '
         'PUNTO 23 — EVENTOS MACRO PROGRAMADOS: si aparece el bloque EVENTOS MACRO PROGRAMADOS PROXIMOS, tratalo como la version a escala de mercado del aviso de earnings: son citas binarias (FOMC, IPC, NFP) capaces de provocar gaps de apertura que NINGUN stop tecnico protege, y afectan a todas las posiciones a la vez, no a un ticker. Menciona el evento y su fecha en la seccion de contexto de mercado y añade una frase de prudencia operativa sobre las ENTRADAS NUEVAS (considerar esperar al evento o reducir tamaño si el horizonte del trade lo cruza), con mas enfasis cuanto mas cerca este (HOY o 1 dia habil = maxima cautela). NO recalcules el RIESGO ni el RANKING de setups individuales, NO especules sobre el resultado del evento ni sobre la direccion del mercado tras el dato, y si el bloque no aparece, no menciones eventos macro programados. '
         'PUNTO 33 — TIEMPO ESTIMADO AL OBJETIVO: cada setup puede incluir la línea "Tiempo estimado al objetivo: X-Y sesiones". Es un ORDEN DE MAGNITUD, no una predicción: X supone avance en línea recta (suelo teórico, casi nunca se da) e Y supone un paseo aleatorio con retrocesos. El rango es ancho a propósito. Cítala UNA sola vez por setup, en el párrafo de niveles, SIEMPRE como rango completo y SIEMPRE con la advertencia de que es orientativa. NUNCA cites solo el extremo bajo ni presentes la cifra como plazo esperado. Úsala para contextualizar el R/B a escala (semanas vs meses). Si el dato no aparece, no lo menciones. '
