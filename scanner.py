@@ -4637,6 +4637,10 @@ def construir_entradas_registro(setups_hoy, valores, fecha):
             'fecha_setup': fecha, 'ticker': s.get('ticker'), 'group': s.get('group'),
             'tipo': s.get('tipo'), 'entry_lo': s.get('entry_lo'), 'entry_hi': s.get('entry_hi'),
             'stop': s.get('stop'), 'target': s.get('target'), 'rr': s.get('rr'),
+            # P92 — sin esto el registro permanente no sabe donde estaba el parcial y la
+            # evaluacion solo puede medir stop/target final, que no es lo que el sistema
+            # recomienda hacer. Las filas anteriores al 25/09/2026 no lo llevan.
+            'target_parcial': s.get('target_parcial'),
             'riesgo': s.get('riesgo'), 'score': s.get('score'), 'rs_4w': s.get('rs_4w'),
             'rsi_al_crear': s.get('rsi_al_crear'),
             'supertrend_al_crear': s.get('supertrend_al_crear'),
@@ -4663,7 +4667,36 @@ def merge_registro_setups(reg, entradas, max_entradas=MAX_REGISTRO_SETUPS):
     reg.sort(key=lambda e: (e.get('fecha_setup') or '', e.get('ticker') or ''))
     return reg[-max_entradas:], nuevas
 
-def actualizar_setups_registro(setups_hoy, valores, macro, ts):
+def marcar_parciales_en_registro(reg, setups_history):
+    """P92 (25/09/2026) — copia al registro permanente la marca de parcial alcanzado.
+
+    merge_registro_setups NO reescribe filas existentes, y con razon: son condiciones de
+    CREACION. El parcial alcanzado es lo contrario — un hecho posterior — asi que necesita
+    esta via aparte. Origen: setups_history.json, donde la marca se pone al evaluar. Ese
+    fichero retiene 30 entradas, asi que una marca se copia mientras el setup siga vivo
+    ahi; una vez copiada al registro permanente ya no se borra.
+
+    Solo escribe si la fila no tiene marca todavia: nunca pisa una marca anterior con una
+    fecha mas nueva. Devuelve el numero de filas marcadas en esta ejecucion.
+    """
+    marcas = {}
+    for entrada in (setups_history or []):
+        for s in (entrada.get('setups') or []):
+            if s.get('parcial_tocado_el'):
+                marcas[(entrada.get('date'), s.get('ticker'))] = (s.get('parcial_tocado_el'),
+                                                                  s.get('parcial_dias'))
+    nuevas = 0
+    for fila in (reg or []):
+        if fila.get('parcial_tocado_el'):
+            continue
+        m = marcas.get((fila.get('fecha_setup'), fila.get('ticker')))
+        if m:
+            fila['parcial_tocado_el'], fila['parcial_dias'] = m
+            nuevas += 1
+    return nuevas
+
+
+def actualizar_setups_registro(setups_hoy, valores, macro, ts, setups_history=None):
     """Persiste el registro permanente. Solo en cierre (ver cabecera)."""
     if not setups_hoy:
         return None
@@ -4680,7 +4713,13 @@ def actualizar_setups_registro(setups_hoy, valores, macro, ts):
         reg = []
     fusionado, nuevas = merge_registro_setups(
         reg, construir_entradas_registro(setups_hoy, valores, fecha))
+    # P92 — las marcas de parcial se copian DESPUES del merge, sobre el registro completo.
+    marcados = marcar_parciales_en_registro(fusionado, setups_history)
+    _total_marcados = sum(1 for e in fusionado if e.get('parcial_tocado_el'))
+    _total_con_tp = sum(1 for e in fusionado if e.get('target_parcial'))
     print(f'  Registro de setups: {nuevas} nuevos | total acumulado: {len(fusionado)}')
+    print(f'  Registro/parciales: {marcados} marcados en esta ejecucion | {_total_marcados} '
+          f'con parcial alcanzado | {_total_con_tp} filas con target_parcial')
     return fusionado
 
 def update_setups_history(values, all_groups):
@@ -4747,6 +4786,7 @@ def update_setups_history(values, all_groups):
     # NUEVO (27/06) — Supertrend actual de cada ticker, como stop dinamico complementario
     current_supertrend = {v['ticker']: v.get('supertrend') for v in values if v.get('supertrend')}
     evaluaciones = []
+    _parciales_nuevos = []      # P92 — solo para la traza del log
     for entrada in history[:-1]:  # todos menos hoy
         dias = (datetime.now(madrid).date() - datetime.strptime(entrada['date'], '%Y-%m-%d').date()).days
         # RECALIBRADO (10/07) — EVALUACION DIARIA CONTINUA. Antes solo se evaluaba en los dias
@@ -4802,6 +4842,30 @@ def update_setups_history(values, all_groups):
             stop_tocado = precio_actual <= s['stop']
             target_tocado = precio_actual >= s['target']
             resultado = 'stop' if stop_tocado else ('target' if target_tocado else 'abierto')
+            # P92 (25/09/2026) — OBJETIVO PARCIAL ALCANZADO: marca PERSISTENTE y PEGAJOSA.
+            #
+            # MOTIVO. La evaluacion del sistema solo conoce dos desenlaces, stop y target
+            # final, y por eso la esperanza salia en -5.9%. Pero el propio sistema recomienda
+            # tomar parcial en target_parcial: un setup que toca el parcial y LUEGO se va al
+            # stop no pierde lo mismo que uno que se va al stop directo. Sin este dato no se
+            # puede medir lo que el sistema de verdad propone, y la evaluacion mide una
+            # estrategia que nadie ejecuta.
+            #
+            # PEGAJOSA porque la evaluacion diaria solo ve el precio de HOY: si el parcial se
+            # toco el martes y el jueves el precio ha vuelto abajo, sin marca persistente ese
+            # toque no existe. La marca se escribe UNA vez en la entrada del historico (que se
+            # vuelve a subir en cada ejecucion) y ya no se borra.
+            #
+            # NO cambia 'resultado', ni el score, ni el RANKING, ni las alertas: es
+            # instrumentacion. La reevaluacion de la esperanza se hara aparte, con las
+            # semanas de marcas que esto genere. Los setups creados antes de hoy no llevan
+            # target_parcial o no fueron vigilados: apareceran sin marca y hay que excluirlos
+            # del calculo, no contarlos como parcial no alcanzado.
+            tp = s.get('target_parcial')
+            if tp and precio_actual >= tp and not s.get('parcial_tocado_el'):
+                s['parcial_tocado_el'] = today
+                s['parcial_dias'] = dias        # dias naturales desde la creacion del setup
+                _parciales_nuevos.append(f"{tk} (dia {dias})")
             # NUEVO (27/06, RECALIBRADO 06/07) — Supertrend dinamico: señal dura de salida total.
             # Recalibracion: alertar SOLO si la ruptura es POSTERIOR a la creacion del setup
             # (supertrend_dias < sesiones_desde_setup). Caso real 05/07: 20+ de 27 alertas eran
@@ -4870,6 +4934,10 @@ def update_setups_history(values, all_groups):
                 'precio_actual':  precio_actual,
                 'stop':        s['stop'],
                 'target':      s['target'],
+                # P92 — el parcial viaja a la evaluacion para poder cruzarlo con el desenlace.
+                'target_parcial':    s.get('target_parcial'),
+                'parcial_tocado_el': s.get('parcial_tocado_el'),
+                'parcial_dias':      s.get('parcial_dias'),
                 'ret_pct':     ret_pct,
                 'resultado':   resultado,
                 'cmf_actual':  round(cmf_actual, 3) if cmf_actual is not None else None,
@@ -4883,6 +4951,14 @@ def update_setups_history(values, all_groups):
                 'supertrend_pre_roto':  supertrend_pre_roto,
             })
 
+    # P92 — traza: sin esto un marcado que no ocurre es invisible hasta que alguien abra
+    # setups_registro.json. Se imprime tambien el acumulado, para ver que la marca persiste.
+    _con_marca = sum(1 for e in history for _s in e.get('setups', []) if _s.get('parcial_tocado_el'))
+    _con_tp = sum(1 for e in history for _s in e.get('setups', []) if _s.get('target_parcial'))
+    if _parciales_nuevos:
+        print('  Parcial alcanzado HOY (marca nueva): ' + ', '.join(_parciales_nuevos))
+    print(f'  Parciales: {_con_marca} setups marcados en el historico, sobre {_con_tp} con '
+          f'target_parcial definido')
     return history, evaluaciones
 
 _TRAZAS_VISTAS = set()
@@ -5608,7 +5684,8 @@ def main():
     # PUNTO 75 — registro permanente de setups: una fila por setup creado, para siempre.
     # setups_history[-1] es la entrada de HOY (update_setups_history la añade al final).
     _setups_hoy = (setups_history[-1].get('setups') if setups_history else None) or []
-    setups_registro = actualizar_setups_registro(_setups_hoy, values_sorted, macro, ts)
+    setups_registro = actualizar_setups_registro(_setups_hoy, values_sorted, macro, ts,
+                                                 setups_history)
     if setups_registro is not None:
         ficheros_subida['setups_registro.json'] = json.dumps(clean_nan(setups_registro), ensure_ascii=False)
     # P57 — serie diaria de spy_health score continuo, en el mismo commit unico.
