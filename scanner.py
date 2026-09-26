@@ -2971,6 +2971,13 @@ def construir_entrada_rates(macro, ts):
         'niveles': curva.get('niveles') or {},
         'variacion_20s_pb': curva.get('variacion_20s_pb') or {},
         'pendientes_pb': curva.get('pendientes_pb') or {},
+        # P93 (26/09/2026) — OAS HY/IG en la serie. Hasta hoy el OAS solo existia en
+        # data.json, que se sobrescribe cada noche: no habia serie, asi que no habia forma
+        # de calibrar un umbral para el IG ni de comprobar despues si un episodio de
+        # credito anticipo algo. Se guarda aqui, misma fuente FRED y misma cadencia que los
+        # tipos. Si el vector no vino, queda {} y la fila se escribe igual: la serie de
+        # tipos no depende del credito.
+        'credito_oas': (((macro or {}).get('regimen') or {}).get('credito_oas') or {}),
     }
 
 def merge_rates_entry(rh, entrada, max_entradas=1000):
@@ -3726,23 +3733,25 @@ def bloque_amplitud(data):
         # empirica para fijarlo (ver P32).
         _disp = breadth.get('dispersion') or {}
         if _disp.get('ratio') is not None:
+            # P93 (26/09/2026) — TERCER caso en cuatro dias (22, 24 y 26/09) de informes que
+            # escriben "ratio ... (bajo)" pese a la prohibicion explicita de clasificar. La
+            # leccion del P33, del P82 y de la direccion de la dispersion se repite: lo que el
+            # modelo tiene que DERIVAR, lo deriva de forma intermitente. Asi que el numero
+            # desnudo deja de viajar al prompt —seguia siendo la invitacion a etiquetarlo— y en
+            # su lugar va la lectura ya resuelta, con el multiplo, que es lo interpretable.
+            # El ratio sigue en el log y en data.json para trazabilidad.
+            _vs = _disp.get('vol_spy_20s_pct')
+            _vv = _disp.get('vol_media_valores_20s_pct')
+            _mult = round(_vv / _vs, 1) if (_vs and _vv) else None
             breadth_txt += (
-                # P82 (03/09/2026) — la etiqueta decia "Dispersion indice/valor: 0.216" y el
-                # informe del 03/09 escribio "La dispersion indice/valor de 0,216 es baja: los
-                # valores se mueven mucho mas que el indice", contradictorio en la superficie.
-                # El nombre invertido del ratio (documentado desde el 04/08) reaparece en cuanto
-                # la palabra "dispersion" viaja pegada al numero. Se separan: el numero se llama
-                # RATIO, y la dispersion solo se nombra ya interpretada.
-                f'- Ratio de convergencia indice/valor: {_disp["ratio"]} '
-                f'(volatilidad anualizada del SPY {_disp.get("vol_spy_20s_pct","?")}% frente a '
-                f'{_disp.get("vol_media_valores_20s_pct","?")}% de media de los valores). '
-                f'ATENCION: este numero NO es el nivel de dispersion, es su INVERSO. Ratio BAJO = '
-                f'ALTA dispersion (los valores se mueven mucho mas que el indice, mercado disperso '
-                f'donde la seleccion individual pesa mas); ratio ALTO = BAJA dispersion (todo se '
-                f'mueve junto). NUNCA escribas "la dispersion es baja/alta" citando este numero al '
-                f'lado, ni llames "dispersion" a la cifra: si mencionas el numero, llamalo RATIO. '
-                f'NO hay umbral calibrado: describe el nivel y su evolucion, no lo clasifiques '
-                f'en categorias inventadas.\n')
+                f'- Dispersion del mercado: los valores se mueven '
+                f'{str(_mult) + " veces mas que el indice" if _mult else "mas que el indice"}'
+                f'{f" (volatilidad anualizada media de los valores {_vv}% frente a {_vs}% del SPY)" if (_vs and _vv) else ""}. '
+                f'Lectura: mercado DISPERSO, donde acertar con el nombre concreto pesa mas que '
+                f'acertar con la direccion del indice. Usa esta lectura TAL CUAL. NO hay umbral '
+                f'calibrado para el nivel de dispersion: tienes PROHIBIDO calificarlo de alto, '
+                f'bajo, moderado o extremo, y PROHIBIDO citar un ratio numerico, que no se te '
+                f'facilita en este bloque.\n')
         # P37b — contexto temporal: sin esto el informe describe la cifra del dia como
         # si fuera nueva cada noche. Se anade fuera de la concatenacion de arriba porque
         # es condicional (puede no haber serie suficiente).
@@ -3803,12 +3812,24 @@ def bloque_amplitud(data):
             _emp = sum(1 for _k in ('pct_sobre_mm20', 'pct_sobre_mm50', 'mcclellan')
                        if isinstance(_pv.get(_k), (int, float)) and isinstance(breadth.get(_k), (int, float))
                        and breadth[_k] < _pv[_k])
-            if _mej == 3:
-                _dir_amp = 'la amplitud MEJORA frente a la sesion previa en sus tres medidas rapidas'
-            elif _emp == 3:
-                _dir_amp = 'la amplitud EMPEORA frente a la sesion previa en sus tres medidas rapidas'
-            else:
+            # P93 (26/09/2026) — CORRECCION del P90. La regla original solo contaba mejoras y
+            # empeoramientos ESTRICTOS, asi que una medida PLANA caia en "mixtas": el 25/09 la
+            # MM20 se quedo igual mientras MM50 y MM200 cedian y el informe lo llamo mixto,
+            # cuando era deterioro. Ahora manda el signo cuando solo hay uno: si nada mejora y
+            # algo empeora, es empeoramiento (y al reves). Mixta queda para lo que de verdad
+            # va en dos direcciones.
+            if _mej and not _emp:
+                _dir_amp = ('la amplitud MEJORA frente a la sesion previa' +
+                            (' en sus tres medidas rapidas' if _mej == 3 else
+                             ' (el resto sin cambio)'))
+            elif _emp and not _mej:
+                _dir_amp = ('la amplitud EMPEORA frente a la sesion previa' +
+                            (' en sus tres medidas rapidas' if _emp == 3 else
+                             ' (el resto sin cambio)'))
+            elif _mej and _emp:
                 _dir_amp = 'la amplitud da señales MIXTAS frente a la sesion previa'
+            else:
+                _dir_amp = 'la amplitud se mantiene SIN CAMBIO relevante frente a la sesion previa'
             breadth_txt += (f'- VARIACION FRENTE A LA SESION PREVIA ({_pv.get("fecha")}): '
                             f'{"; ".join(_cambios)}. Lectura: {_dir_amp}. Distingue NIVEL y '
                             f'DIRECCION: una amplitud debil que mejora NO es "deterioro"; describe '
