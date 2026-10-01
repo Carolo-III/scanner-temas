@@ -3265,6 +3265,41 @@ def check_frescura_panel(close_df):
     if pct_frescos < 90.0:
         msg += ' | AVISO: mas del 10% de tickers sin dato en la ultima sesion (descarga parcial)'
     print(msg)
+    # P94 (01/10/2026) — DIAGNOSTICO cuando el panel llega incompleto. Las ejecuciones
+    # programadas del 29 y 30/09 y del 01/10 dieron 0.2% de tickers con dato (≈1 de 558) y la
+    # guarda del P65 bloqueo data.json, mientras que ejecuciones MANUALES de la misma sesion
+    # —00:40 y 06:43 hora de Madrid— vieron el panel completo. Las tres fallidas arrancaron
+    # entre las 02:00 y las 02:45 de Madrid (20:00-20:45 en Nueva York). Con eso hay una
+    # hipotesis —una franja horaria en la que la fuente sirve la ultima fila vacia— y ningun
+    # dato para confirmarla: el log solo dice el porcentaje, no QUE le pasa a la fila.
+    #
+    # Esto NO arregla nada ni toca el cron: deja constancia para decidir con datos. Imprime
+    # la hora de ejecucion (Madrid y Nueva York), el reparto de ultimas fechas con dato por
+    # ticker, cuantos tickers vienen enteros sin dato y como de llena esta la fila anterior.
+    # Si la fila anterior esta llena y la ultima vacia, la fuente esta sirviendo una sesion
+    # sin rellenar; si faltan tickers en todas, es una descarga parcial. Son cosas distintas.
+    if pct_frescos < MIN_FRESCOS_PARA_PUBLICAR and close_df.shape[1] >= 100:
+        try:
+            _ahora_ny = pd.Timestamp.now(tz='America/New_York')
+            _ahora_mad = _ahora_ny.tz_convert('Europe/Madrid')
+            print(f'  P94 diagnostico panel incompleto | ejecucion {_ahora_mad:%Y-%m-%d %H:%M} '
+                  f'Madrid / {_ahora_ny:%H:%M} Nueva York | filas={len(close_df)} '
+                  f'tickers={close_df.shape[1]}')
+            _ult_dato = close_df.apply(lambda col: col.last_valid_index())
+            _vacios = int(_ult_dato.isna().sum())
+            _reparto = _ult_dato.dropna().value_counts().head(3)
+            _txt = ', '.join(f'{pd.Timestamp(f).date()}: {n}' for f, n in _reparto.items())
+            print(f'    Ultima fecha CON dato por ticker (top 3): {_txt or "sin datos"} | '
+                  f'tickers sin ningun dato: {_vacios}')
+            if len(close_df) >= 2:
+                _pen = round(float(close_df.iloc[-2].notna().mean() * 100), 1)
+                print(f'    Fila anterior ({pd.Timestamp(close_df.index[-2]).date()}): '
+                      f'{_pen}% de tickers con dato')
+            _con = list(close_df.columns[close_df.iloc[-1].notna()])[:8]
+            print(f'    Tickers CON dato en la ultima fila ({len(_con)} mostrados): '
+                  f'{", ".join(map(str, _con)) or "ninguno"}')
+        except Exception as _e:
+            _traza('frescura/diagnostico-p94', _e)
     _BREADTH_CACHE['ultima_sesion'] = str(ultima.date())  # PUNTO 24 — fecha de sesion para la serie de amplitud
     resultado = {'ultima_sesion': str(ultima.date()), 'retraso_habiles': int(retraso),
                  'pct_tickers_frescos': pct_frescos}
