@@ -1003,7 +1003,7 @@ def get_fundamentals(tickers):
             info = yf.Ticker(tk).info
             precio_actual = info.get('currentPrice') or info.get('regularMarketPrice') or 0
             target_medio = info.get('targetMeanPrice', 0) or 0
-            result[tk] = {
+            _d = {
                 'per_trailing':  round(info.get('trailingPE',  0) or 0, 1),
                 'per_forward':   round(info.get('forwardPE',   0) or 0, 1),
                 'peg':           round(info.get('pegRatio',    0) or 0, 2),
@@ -1014,14 +1014,22 @@ def get_fundamentals(tickers):
                 'margen_bruto':     round((info.get('grossMargins', 0) or 0) * 100, 1) or None,
                 'margen_operativo': round((info.get('operatingMargins', 0) or 0) * 100, 1) or None,
                 'roe':           round((info.get('returnOnEquity', 0) or 0) * 100, 1),
+                # (los margenes se validan mas abajo: ver P95)
                 'deuda_equity':  round(info.get('debtToEquity', 0) or 0, 2),
                 'rev_growth':    round((info.get('revenueGrowth', 0) or 0) * 100, 1),
                 'eps_trailing':  round(info.get('trailingEps', 0) or 0, 2),
                 'eps_fwd':       round(info.get('forwardEps', 0) or 0, 2),
                 'eps_growth':    round((info.get('earningsGrowth', 0) or 0) * 100, 1),
                 'sector':        info.get('sector', ''),
+                # P95 (02/10/2026) — marca de incoherencia de margenes. El informe del 02/10
+                # describio $MU con margen operativo 80.4% SOBRE un bruto de 72.6%, que es
+                # imposible por definicion (el operativo resta gastos al bruto). Viene asi del
+                # proveedor. No se corrige el dato ni se adivina cual de los dos esta mal: se
+                # marca, se avisa en el log y los dos margenes se omiten del prompt, igual que
+                # cualquier campo ausente. El resto de fundamentales no se toca.
                 'mkt_cap_b':     round((info.get('marketCap', 0) or 0) / 1e9, 1),
                 # NUEVO (28/06) — consenso de analistas, sin coste adicional (mismo info de yfinance)
+                'margenes_incoherentes': False,
                 'analista_consenso':    info.get('recommendationKey', ''),
                 'analista_n_opiniones': info.get('numberOfAnalystOpinions', 0) or 0,
                 'analista_target_medio': round(target_medio, 2) if target_medio else None,
@@ -1030,6 +1038,16 @@ def get_fundamentals(tickers):
                 'analista_upside_pct':  (round((target_medio/precio_actual - 1) * 100, 1)
                                          if target_medio and precio_actual else None),
             }
+            # P95 — el margen operativo no puede superar al bruto: el operativo resta gastos
+            # al bruto. Si llega asi del proveedor, uno de los dos esta mal y no hay forma de
+            # saber cual: se marcan ambos y se omiten del prompt (como cualquier campo que
+            # falte), en vez de dejar que el informe razone sobre un imposible.
+            _mb, _mo = _d.get('margen_bruto'), _d.get('margen_operativo')
+            if _mb is not None and _mo is not None and _mo > _mb:
+                _d['margenes_incoherentes'] = True
+                print(f'  AVISO fundamentales {tk}: margen operativo ({_mo}%) > margen bruto '
+                      f'({_mb}%) — imposible; ambos margenes se omiten del informe')
+            result[tk] = _d
         except Exception as _e:
             _traza('fundamentales/ticker', _e)
             result[tk] = {}
@@ -3236,6 +3254,53 @@ def formato_correlacion_summary(cc, valid):
     return s
 
 
+MIN_COBERTURA_FILA_FINAL = 50.0   # P95 — % minimo de tickers con dato para aceptar la ultima fila
+
+
+def recortar_filas_fantasma(close_df, otros=None, min_cobertura=MIN_COBERTURA_FILA_FINAL):
+    """P95 (02/10/2026) — elimina las filas FINALES con cobertura ridicula ("fila fantasma").
+
+    CAUSA MEDIDA, no supuesta. El diagnostico del P94 en la ejecucion programada del 02/10
+    (02:24 Madrid / 20:24 Nueva York) mostro: 251 filas, 521 tickers, ultima fila con UN solo
+    ticker (HUBB) con dato, fila anterior (30/09) al 99.8%, cero tickers sin ningun dato. Es
+    decir, la fuente abre la fila de la sesion nueva con un valor suelto. La frescura se mide
+    sobre la ULTIMA fila, salia 0.2% y la guarda del P65 bloqueaba data.json. Cuatro noches
+    seguidas, siempre entre las 20:00 y las 20:45 de Nueva York; las ejecuciones manuales,
+    mas tarde, veian el panel completo.
+
+    Quitar la fila devuelve el panel a su ultima sesion COMPLETA, que es sobre la que hay que
+    calcular. Se corrigen asi dos riesgos opuestos: el bloqueo de data.json cuando la fila
+    trae 1 ticker, y la contaminacion silenciosa de amplitud e indicadores si algun dia esa
+    fila llegara con el 30% o el 40% y pasara el filtro del P65.
+
+    Solo recorta por el FINAL y solo si queda panel suficiente. No toca el cron ni la fuente.
+    `otros` son los dataframes paralelos (high/low/volumen) a recortar igual, para que no se
+    descuadren los indices. Devuelve (close_df, otros_recortados, n_filas_quitadas).
+    """
+    otros = list(otros or [])
+    if close_df is None or len(close_df) < 2 or close_df.shape[1] < 100:
+        return close_df, otros, 0
+    quitadas = []
+    while len(close_df) >= 2:
+        cob = float(close_df.iloc[-1].notna().mean() * 100)
+        if cob >= min_cobertura:
+            break
+        quitadas.append((pd.Timestamp(close_df.index[-1]).date(), round(cob, 1)))
+        close_df = close_df.iloc[:-1]
+    if not quitadas:
+        return close_df, otros, 0
+    recortados = []
+    for df in otros:
+        if df is not None and len(df) > 0:
+            df = df.loc[df.index <= close_df.index[-1]]
+        recortados.append(df)
+    detalle = ', '.join(f'{f} ({c}%)' for f, c in quitadas)
+    print(f'  P95 fila(s) fantasma descartada(s): {detalle} | el panel termina ahora en '
+          f'{pd.Timestamp(close_df.index[-1]).date()} '
+          f'({round(float(close_df.iloc[-1].notna().mean() * 100), 1)}% de tickers con dato)')
+    return close_df, recortados, len(quitadas)
+
+
 def check_frescura_panel(close_df):
     """PUNTO 22 — chequeo de frescura del panel de datos (15/07/2026).
 
@@ -3352,6 +3417,12 @@ def check_data_health(close_df, high_df, low_df, vol_df, max_var_diaria=0.50, mi
     return sospechosos
 
 def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, spy_healthy=True, spy_score=None):
+    # P95 — ANTES de medir frescura: si la fuente abrio la sesion nueva con un punado de
+    # tickers, esa fila se descarta y el panel vuelve a su ultima sesion completa. Si no se
+    # recorta aqui, la frescura se mide sobre la fila fantasma y la guarda del P65 bloquea
+    # data.json con el panel entero sano detras (cuatro noches seguidas, 29/09 a 02/10).
+    close_df, (vol_df, high_df, low_df), _ = recortar_filas_fantasma(
+        close_df, [vol_df, high_df, low_df])
     check_frescura_panel(close_df)  # PUNTO 22 — aviso en log si el panel llega rancio o incompleto
     _sospechosos = check_data_health(close_df, high_df, low_df, vol_df)  # PUNTO 35 — coherencia OHLCV
     _CLOSES_CACHE['__BENCH__'] = bench  # PUNTO 17 — benchmark para betas
@@ -4170,10 +4241,11 @@ def bloque_setups(valid, fundamentales):
                 f_parts.append(f'SorpresaEPS:{fund["sorpresa_eps_pct"]:+}%({fund.get("sorpresa_fecha","?")})')
             if fund.get('fmp_eps_q'):
                 f_parts.append(f'EPStrim:{"->".join(str(x) for x in fund["fmp_eps_q"])}')
-            if fund.get('margen_bruto') is not None:
-                f_parts.append(f'MargenBruto:{fund["margen_bruto"]}%')
-            if fund.get('margen_operativo') is not None:
-                f_parts.append(f'MargenOperativo:{fund["margen_operativo"]}%')
+            if not fund.get('margenes_incoherentes'):      # P95
+                if fund.get('margen_bruto') is not None:
+                    f_parts.append(f'MargenBruto:{fund["margen_bruto"]}%')
+                if fund.get('margen_operativo') is not None:
+                    f_parts.append(f'MargenOperativo:{fund["margen_operativo"]}%')
             if fund.get('fmp_roic') is not None:
                 f_parts.append(f'ROIC:{fund["fmp_roic"]}%')
             if fund.get('fcf_growth') is not None:
