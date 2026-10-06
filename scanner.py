@@ -2698,11 +2698,31 @@ def anotar_resoluciones(evaluaciones, macro, ts):
         rh = []
     else:
         _BREADTH_CACHE['resoluciones'] = rh
-    previas = {(e.get('fecha_setup'), e.get('ticker')): e.get('fecha_deteccion') for e in rh}
+    previas = {(e.get('fecha_setup'), e.get('ticker')): e for e in rh}
     for r in resoluciones:
         clave = (r.get('fecha_setup'), r.get('ticker'))
+        _prev = previas.get(clave) or {}
         # Si no estaba registrada, se detecta HOY (aunque solo se persista si es cierre).
-        r['fecha_deteccion'] = previas.get(clave) or fecha_panel
+        r['fecha_deteccion'] = _prev.get('fecha_deteccion') or fecha_panel
+        # P96 (06/10/2026) — RETORNO CONGELADO de la resolucion.
+        #
+        # ret_pct se recalcula cada dia como precio_de_hoy / entrada, tambien para los setups
+        # YA resueltos. Consecuencia medida el 06/10: VKTX (stop 32.33, entrada 35.83) salia
+        # como "STOP alcanzado ... ret=-18.3%" cuando salir en el stop es -9.8%; y los mismos
+        # stops reaparecian cada dia con cifra distinta (EFX -21.2% el 02/10, -19.8% el 06/10).
+        # Se seguia contando la caida DESPUES de que la posicion debiera estar cerrada.
+        #
+        # El historico SI esta bien: merge_resoluciones conserva la primera deteccion, y es de
+        # ahi de donde lee tools/analisis_rendimiento.py — la esperanza del sistema NO esta
+        # afectada. Esto es un fallo de PRESENTACION, en la seccion que el propio prompt llama
+        # la mas accionable del informe, y exagera las perdidas de forma creciente con el tiempo.
+        #
+        # Se congela lo que se MUESTRA, no lo que se mide: ret_pct y precio_actual siguen
+        # intactos (los usa la persistencia, y para una resolucion nueva son correctos: el
+        # primer dia detectado ES el dia de la resolucion). Si la resolucion es de hoy, no hay
+        # entrada previa y los campos congelados valen lo mismo que los vivos.
+        r['ret_pct_resolucion'] = _prev.get('ret_pct', r.get('ret_pct'))
+        r['precio_resolucion'] = _prev.get('precio_actual', r.get('precio_actual'))
         dias = _dias_habiles_entre(r['fecha_deteccion'], fecha_panel)
         r['dias_desde_deteccion'] = dias
         r['reciente'] = (dias is None) or (dias <= DIAS_RESOLUCION_RECIENTE)
@@ -4017,15 +4037,23 @@ def bloque_seguimiento(data):
         # los mejores objetivos, que es lo accionable— y el resto pasa al resumen. Un
         # stop del -4% no cambia ninguna decision; uno del -32% si.
         if len(recientes) > MAX_RESOLUCIONES_DETALLADAS:
-            recientes = sorted(recientes, key=lambda r: abs(r.get('ret_pct') or 0), reverse=True)
+            # P96 — ordenar por la perdida REAL de la resolucion, no por la acumulada despues.
+            recientes = sorted(recientes,
+                               key=lambda r: abs(r.get('ret_pct_resolucion',
+                                                       r.get('ret_pct')) or 0), reverse=True)
             recientes, resto = recientes[:MAX_RESOLUCIONES_DETALLADAS], recientes[MAX_RESOLUCIONES_DETALLADAS:]
             antiguas = antiguas + resto
         summary += ('\nSEGUIMIENTO — SETUPS RESUELTOS (el precio ya ha tocado stop u objetivo; '
                     'son hechos consumados, NO vigilancia ni recomendacion de entrada):\n')
         for r in recientes:
             que = 'STOP ALCANZADO' if r['resultado'] == 'stop' else 'OBJETIVO ALCANZADO'
+            # P96 — precio y retorno DE LA RESOLUCION (el dia en que se toco stop u objetivo),
+            # no el marcaje a mercado de hoy: la posicion ya estaba cerrada.
+            _pr = r.get('precio_resolucion', r.get('precio_actual'))
+            _rr = r.get('ret_pct_resolucion', r.get('ret_pct'))
             summary += (f'- {r["ticker"]}: setup del {r["fecha_setup"]} ({r["dias"]}d) | {que} | '
-                        f'Entrada ${r["precio_entrada"]} -> ${r["precio_actual"]} | Ret: {r["ret_pct"]}%\n')
+                        f'Entrada ${r["precio_entrada"]} -> ${_pr} (al resolverse '
+                        f'{r.get("fecha_deteccion", "?")}) | Ret: {_rr}%\n')
         if not recientes:
             summary += '- (ninguna resolucion nueva en las ultimas sesiones)\n'
         if antiguas:
@@ -5703,13 +5731,19 @@ def main():
         # PUNTO 10 + NUEVO (27/06, RECALIBRADO 06/07 y 10/07) — alertas con jerarquia y
         # deduplicadas por ticker para presentacion (data.json conserva todas)
         # PUNTO 40 — resoluciones primero: un stop alcanzado es mas urgente que cualquier alerta.
-        _resoluciones = resoluciones_por_ticker(evaluaciones)
+        # P96 — usar la lista ANOTADA (trae el retorno congelado de la primera deteccion);
+        # si por lo que sea no esta en cache, se recalcula como antes y se muestra el vivo.
+        _cache_res = _BREADTH_CACHE.get('resoluciones_hoy')
+        _resoluciones = (_cache_res[0] if _cache_res else resoluciones_por_ticker(evaluaciones))
         if _resoluciones:
             print(f'  🎯 SETUPS RESUELTOS ({len(_resoluciones)}): stop u objetivo alcanzado')
             for _r in _resoluciones:
                 _que = 'STOP' if _r['resultado'] == 'stop' else 'OBJETIVO'
+                _pr = _r.get('precio_resolucion', _r.get('precio_actual'))   # P96
+                _rr = _r.get('ret_pct_resolucion', _r.get('ret_pct'))
                 print(f'     {_r["ticker"]}: setup del {_r["fecha_setup"]} | {_que} alcanzado | '
-                      f'entrada ${_r["precio_entrada"]} -> ${_r["precio_actual"]} | ret={_r["ret_pct"]}%')
+                      f'entrada ${_r["precio_entrada"]} -> ${_pr} | ret={_rr}% '
+                      f'(al resolverse {_r.get("fecha_deteccion", "?")})')
         alertas_cmf = dedup_alertas_por_ticker([e for e in evaluaciones if e.get('alerta_cmf')])
         alertas_st = dedup_alertas_por_ticker([e for e in evaluaciones if e.get('alerta_supertrend')])
         pre_rotos = [e for e in evaluaciones if e.get('supertrend_pre_roto')]
