@@ -4451,7 +4451,34 @@ def construir_prompt(data, externos=None):
     if _pc:
         breadth_txt = (breadth_txt + '\n' + _pc) if breadth_txt else _pc
 
-    summary=f'DATOS — {ts}\nSPY sobre MM200: {"SI" if spy_ok else "NO"}\n\n' + macro_txt + breadth_txt + 'FUERTES:\n'
+    # P97 (07/10/2026) — AVISO DE SESION DESFASADA, lo primero del prompt.
+    #
+    # El 07/10 la ejecucion de las 02:17 publico un informe fechado 07/10 que describia la
+    # sesion del 05/10: la fuente aun no habia servido los cierres del 06 y el P95 descarto
+    # esa fila. El retraso constaba en el log ("retraso 1 dia(s) habiles") pero NO en el
+    # informe, asi que se leia como el cuadro de hoy. No era un matiz: con la sesion real
+    # del 06/10 la amplitud pasaba de 37.3% a 46.1% sobre MM20 y los candidatos de cuatro
+    # a dos. Era otro mercado.
+    #
+    # El aviso va ARRIBA del todo y con la fecha real de la sesion, para que el informe no
+    # pueda presentarla como la de hoy. Si el panel esta al dia (retraso 0) no se escribe
+    # nada: un aviso permanente se vuelve invisible.
+    _fresc = _BREADTH_CACHE.get('frescura_panel') or {}
+    _retraso = _fresc.get('retraso_habiles')
+    _aviso_sesion = ''
+    if isinstance(_retraso, (int, float)) and _retraso >= 1:
+        _ses = _fresc.get('ultima_sesion', '?')
+        _aviso_sesion = (
+            f'⚠️ AVISO OBLIGATORIO — SESION DESFASADA: los datos de este informe son del '
+            f'CIERRE DEL {_ses}, con {int(_retraso)} dia(s) habil(es) de retraso: la sesion '
+            f'mas reciente todavia no estaba disponible en la fuente al generarse. TODO lo '
+            f'que sigue (amplitud, precios, setups, seguimiento) describe esa sesion, NO la '
+            f'de hoy. Tienes la OBLIGACION de abrir la seccion 1 diciendo exactamente de que '
+            f'sesion son los datos y advirtiendo de que el mercado ha podido moverse desde '
+            f'entonces; no presentes estas cifras como la foto de hoy ni describas los '
+            f'movimientos como si fueran de la ultima sesion.\n\n')
+    summary=(f'DATOS — {ts}\nSPY sobre MM200: {"SI" if spy_ok else "NO"}\n\n'
+             + _aviso_sesion + macro_txt + breadth_txt + 'FUERTES:\n')
     for g in strong[:5]:
         leaders=', '.join(m['ticker']+'('+str(m['score'])+')' for m in g['top3'])
         summary+=f'- {g["group"]}: {g["score"]} | RS:{g["rs_mean"]}% | {leaders}\n'
