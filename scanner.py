@@ -108,6 +108,63 @@ def download_prices(tickers, period='1y'):
     return (pd.concat(all_c, axis=1), pd.concat(all_v, axis=1),
             pd.concat(all_h, axis=1), pd.concat(all_l, axis=1))
 
+def diagnostico_entorno_fuente():
+    """P98 (08/10/2026) — huella del ENTORNO y de la FUENTE, en TODAS las ejecuciones.
+
+    PREGUNTA QUE RESPONDE. Desde el 29/09, TODAS las ejecuciones programadas traen el panel
+    sin la ultima sesion (fila ausente, con 1-2 tickers o directamente al 0.0%) y TODAS las
+    manuales lo traen completo. Sin una sola excepcion en doce dias. Las horas no separan los
+    casos —manuales buenas a las 00:17 y a las 07:08, programadas malas a las 02:00 y a las
+    03:07— pero el TIPO de ejecucion si. Eso deja dos hipotesis vivas:
+      (a) franja horaria: la fuente no sirve el cierre entre ~02:00 y ~03:30 de Madrid;
+      (b) contexto de ejecucion: el runner de una ejecucion programada recibe otra respuesta
+          (limitacion por IP, pool distinto de runners, cache de la fuente).
+    El P94 solo mira el panel YA construido y solo cuando falla. Esto mira lo que devuelve la
+    fuente y se imprime SIEMPRE, para poder comparar linea a linea una manual contra una
+    programada del mismo dia.
+
+    No arregla nada y no cambia ningun dato: solo imprime. Si algo falla, se calla.
+    """
+    try:
+        _ny = pd.Timestamp.now(tz='America/New_York')
+        _mad = _ny.tz_convert('Europe/Madrid')
+        # GITHUB_EVENT_NAME distingue 'schedule' de 'workflow_dispatch'; fuera de Actions, '-'.
+        _evento = os.environ.get('GITHUB_EVENT_NAME', '-')
+        _run = os.environ.get('GITHUB_RUN_ID', '-')
+        print(f'  P98 entorno: evento={_evento} | run={_run} | '
+              f'{_mad:%Y-%m-%d %H:%M} Madrid / {_ny:%H:%M} Nueva York | '
+              f'yfinance {getattr(yf, "__version__", "?")}')
+    except Exception as e:
+        _traza('p98/entorno', e)
+    # Huella de la FUENTE sobre tickers de referencia, con descarga propia y minima.
+    for tk in ('SPY', 'AAPL', 'MSFT'):
+        try:
+            raw = yf.download(tk, period='5d', interval='1d',
+                              auto_adjust=True, progress=False, threads=False)
+            if raw is None or raw.empty:
+                print(f'  P98 fuente {tk}: respuesta VACIA')
+                continue
+            cierres = raw['Close']
+            if hasattr(cierres, 'columns'):
+                cierres = cierres.iloc[:, 0]
+            _filas = [f'{pd.Timestamp(f).date()}='
+                      f'{"nan" if pd.isna(v) else round(float(v), 2)}'
+                      for f, v in cierres.tail(3).items()]
+            _ultimo_valido = cierres.last_valid_index()
+            print(f'  P98 fuente {tk}: ultimas filas {" | ".join(_filas)} | '
+                  f'ultimo cierre con dato: '
+                  f'{pd.Timestamp(_ultimo_valido).date() if _ultimo_valido is not None else "ninguno"}')
+        except Exception as e:
+            print(f'  P98 fuente {tk}: EXCEPCION {type(e).__name__}: {str(e)[:120]}')
+    # IP de salida del runner: si las programadas y las manuales salen por rangos distintos,
+    # una limitacion por IP explicaria la diferencia. Si no se puede consultar, se dice.
+    try:
+        _ip = requests.get('https://api.ipify.org', timeout=5).text.strip()
+        print(f'  P98 IP de salida: {_ip}')
+    except Exception as e:
+        print(f'  P98 IP de salida: no disponible ({type(e).__name__})')
+
+
 def spy_health(bench_close, confirm_days=3):
     """
     NUEVO (05/07) — Anti-whiplash: filtro de confirmacion ASIMETRICO.
@@ -5618,6 +5675,10 @@ def main():
     import pickle, os
     CACHE_FILE = '/tmp/scanner_cache.pkl'
     cache = {}
+
+    # P98 — huella de entorno y fuente ANTES de cualquier descarga del pipeline, para que la
+    # comparacion manual/programada no dependa de lo que el propio scanner haya hecho antes.
+    diagnostico_entorno_fuente()
 
     print('▸ SPY...')
     bc,bv,bh,bl=download_prices(['SPY'],period='1y'); bs=bc['SPY']
