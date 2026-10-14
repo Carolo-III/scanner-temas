@@ -2459,6 +2459,11 @@ def actualizar_breadth_history(breadth, macro, ts):
 # ============================================================
 
 URL_PUTCALL_CBOE = 'https://www.cboe.com/markets/us/options/market-statistics/daily/'
+# P99 (14/10/2026) — meses en ingles para leer la fecha que la pagina de Cboe muestra
+# sobre la tabla ("13 October 2026").
+_MESES_CBOE = {m: i + 1 for i, m in enumerate(
+    ['january', 'february', 'march', 'april', 'may', 'june',
+     'july', 'august', 'september', 'october', 'november', 'december'])}
 
 # P85 (05/09/2026) — minimo de sesiones para dar CONTEXTO historico al put/call. Por
 # debajo de esto solo se pasan los niveles del dia: con una serie corta, un percentil es
@@ -2511,6 +2516,29 @@ def get_putcall_cboe():
     if not etiquetas:
         _traza('putcall/tabla-no-encontrada', RuntimeError('sin filas PUT/CALL RATIO'))
         return {}
+    # P99 — FECHA DE LA PROPIA PAGINA.
+    #
+    # MOTIVO MEDIDO. Los ratios se guardaban con la fecha de SESION DEL PANEL, no con la
+    # suya. Cboe publica con unas horas de desfase, asi que una ejecucion de la noche
+    # recoge todavia la jornada anterior y la serie la archiva como si fuera la de hoy.
+    # Pruebas: 07/10 y 08/10 quedaron con los SEIS ratios identicos (0.62/0.89/1.03/1.10/
+    # 0.34/1.18), y el 13/10 a las 22:19 se guardo 0.62 —el valor del 12/10— que el
+    # informe califico de "MIEDO relativo, percentil 80.5"; a las 08:12 del 14/10, con la
+    # pagina ya actualizada, el valor real resulto ser 0.54 (percentil 26.2, NEUTRAL) y
+    # sobrescribio al anterior. Sin esa segunda ejecucion, el duplicado se queda.
+    #
+    # Importa porque la serie alimenta el percentil del P90: duplicados y fechas corridas
+    # sesgan la calificacion de miedo/complacencia que el informe usa TAL CUAL.
+    fecha_cboe = None
+    try:
+        import re as _re
+        _m = _re.search(r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})', sopa.get_text(' ', strip=True))
+        if _m and _m.group(2).lower() in _MESES_CBOE:
+            fecha_cboe = str(pd.Timestamp(year=int(_m.group(3)),
+                                          month=_MESES_CBOE[_m.group(2).lower()],
+                                          day=int(_m.group(1))).date())
+    except Exception as _e:
+        _traza('putcall/fecha-pagina', _e)
     salida = {}
     for nombre, etiqueta in RATIOS_PUTCALL.items():
         if etiqueta in etiquetas:
@@ -2519,6 +2547,8 @@ def get_putcall_cboe():
     # construir_prompt sin una sola llamada de red y esa propiedad no se rompe por un
     # añadido. Esta funcion ya sale a internet, asi que es el sitio natural. Si la lectura
     # falla, el contexto historico simplemente no aparece y los niveles del dia si.
+    if fecha_cboe:
+        salida['_fecha_cboe'] = fecha_cboe
     _PUTCALL_CACHE['actual'] = salida
     try:
         _hist, _ = get_github_file('putcall_history.json')
@@ -2546,7 +2576,10 @@ def _texto_putcall():
     actual = _PUTCALL_CACHE.get('actual') or {}
     if not actual:
         return ''
-    txt = ('PUT/CALL DE CBOE (sentimiento de opciones, sesion anterior):\n'
+    _fecha_pc = actual.get('_fecha_cboe')      # P99
+    actual = {k: v for k, v in actual.items() if not k.startswith('_')}
+    txt = (f'PUT/CALL DE CBOE (sentimiento de opciones, cierre del '
+           f'{_fecha_pc or "ultima sesion publicada"}):\n'
            '- ' + ' | '.join(f'{k}={v}' for k, v in sorted(actual.items())) + '\n')
     eq = actual.get('equity')
     hist = [e for e in (_PUTCALL_CACHE.get('historial') or []) if e.get('equity') is not None]
@@ -2604,11 +2637,26 @@ def _texto_putcall():
     return txt
 
 def construir_entrada_putcall(putcall, macro, ts):
-    """Una linea de la serie: fecha de SESION del panel + los ratios del dia."""
+    """Una linea de la serie: la fecha que dice CBOE (P99) + los ratios de esa jornada.
+
+    Antes se usaba la fecha de sesion del PANEL, lo que corria el dato un dia cuando Cboe
+    aun no habia publicado (ver motivo en get_putcall_cboe). Si la pagina no trae fecha
+    legible, se vuelve al comportamiento anterior y se deja constancia en el log: es
+    preferible la serie con la fecha del panel a no tener serie.
+    """
     if not putcall:
         return None
     base = construir_entrada_breadth({}, macro, ts)
-    return {'fecha': base.get('fecha'), 'es_cierre': base.get('es_cierre'), **putcall}
+    ratios = {k: v for k, v in putcall.items() if not k.startswith('_')}
+    fecha_cboe = putcall.get('_fecha_cboe')
+    if not fecha_cboe:
+        print('  Put/call: la pagina de Cboe no trae fecha legible — se archiva con la '
+              'fecha de sesion del panel (comportamiento anterior al P99)')
+    elif fecha_cboe != base.get('fecha'):
+        print(f'  Put/call: Cboe publica el cierre del {fecha_cboe}, la sesion del panel es '
+              f'{base.get("fecha")} — se archiva con la fecha de Cboe')
+    return {'fecha': fecha_cboe or base.get('fecha'),
+            'es_cierre': base.get('es_cierre'), **ratios}
 
 def merge_putcall(ph, entrada, max_entradas=2000):
     """Misma regla de precedencia que el P29: un cierre no lo pisa una provisional."""
@@ -3394,9 +3442,18 @@ def check_frescura_panel(close_df):
         print('  AVISO FRESCURA: panel de cierres vacio')
         return None
     ultima = pd.Timestamp(close_df.index[-1]).normalize()
-    hoy_ny = pd.Timestamp.now(tz='America/New_York').tz_localize(None).normalize()
-    ult_habil = hoy_ny if hoy_ny.dayofweek < 5 else hoy_ny - pd.offsets.BDay(1)
-    # dias habiles de retraso entre la ultima sesion del panel y el ultimo dia habil
+    # P99 (14/10/2026) — el retraso debe medirse contra la ultima sesion YA CERRADA, no
+    # contra el ultimo dia habil del calendario. Antes, cualquier ejecucion de la mañana
+    # contaba el dia en curso como sesion que deberia estar: el 8, el 12, el 13 y el 14/10
+    # el panel venia al dia y el P97 abria el informe avisando de un retraso inexistente,
+    # presentando datos correctos como viejos. El dia en curso solo cuenta cuando ya han
+    # pasado las 16:00 de Nueva York (cierre del mercado).
+    _ahora_ny_ts = pd.Timestamp.now(tz='America/New_York')
+    hoy_ny = _ahora_ny_ts.tz_localize(None).normalize()
+    _hoy_es_habil = hoy_ny.dayofweek < 5
+    _hoy_ya_cerro = _hoy_es_habil and _ahora_ny_ts.hour >= 16
+    ult_habil = hoy_ny if _hoy_ya_cerro else hoy_ny - pd.offsets.BDay(1)
+    # dias habiles de retraso entre la ultima sesion del panel y la ultima ya cerrada
     retraso = max(0, len(pd.bdate_range(ultima, ult_habil)) - 1)
     pct_frescos = round(float(close_df.iloc[-1].notna().mean() * 100), 1)
     msg = f'  Frescura panel: ultima sesion {ultima.date()} (retraso {retraso} dia(s) habil(es)) | {pct_frescos}% tickers con dato en la ultima sesion'
