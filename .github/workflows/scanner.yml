@@ -2,7 +2,7 @@ name: Scanner Temas Emergentes
 
 on:
   schedule:
-    - cron: '17 1 * * 1-5'
+    - cron: '17 1 * * 2-6'
   workflow_dispatch:
     inputs:
       dry_run:
