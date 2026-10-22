@@ -2529,16 +2529,35 @@ def get_putcall_cboe():
     #
     # Importa porque la serie alimenta el percentil del P90: duplicados y fechas corridas
     # sesgan la calificacion de miedo/complacencia que el informe usa TAL CUAL.
+    # P100 (22/10/2026) — el P99 buscaba la fecha en el TEXTO VISIBLE (sopa.get_text) y
+    # nunca la encontro: 5 de 5 ejecuciones sin _fecha_cboe. Medido sobre el HTML real de
+    # la pagina (guardado el 22/10): la fecha no esta en el texto, esta en
+    #   1) los datos de la pagina: "selectedDate":"2026-10-21" (dentro de un <script>)
+    #   2) el atributo value del selector: <input placeholder="yyyy/mm/dd" value="21 October 2026">
+    # get_text() no incluye ni scripts ni atributos. Se lee 1) del HTML en bruto y, si
+    # falta, 2). La linea 'P100 fecha Cboe' sale SIEMPRE, con fecha o sin ella, para que el
+    # log distinga "funciona" de "no se ejecuto" (lo que ocultaba el fallo del P99).
     fecha_cboe = None
+    origen_fecha = None
     try:
         import re as _re
-        _m = _re.search(r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})', sopa.get_text(' ', strip=True))
-        if _m and _m.group(2).lower() in _MESES_CBOE:
-            fecha_cboe = str(pd.Timestamp(year=int(_m.group(3)),
-                                          month=_MESES_CBOE[_m.group(2).lower()],
-                                          day=int(_m.group(1))).date())
+        _m = _re.search(r'selectedDate\\*"\s*:\s*\\*"(\d{4}-\d{2}-\d{2})', r.text)
+        if _m:
+            fecha_cboe = str(pd.Timestamp(_m.group(1)).date())
+            origen_fecha = 'selectedDate'
+        else:
+            _inp = sopa.find('input', attrs={'placeholder': 'yyyy/mm/dd'})
+            _val = (_inp.get('value') or '') if _inp else ''
+            _m = _re.match(r'\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s*$', _val)
+            if _m and _m.group(2).lower() in _MESES_CBOE:
+                fecha_cboe = str(pd.Timestamp(year=int(_m.group(3)),
+                                              month=_MESES_CBOE[_m.group(2).lower()],
+                                              day=int(_m.group(1))).date())
+                origen_fecha = 'input value'
     except Exception as _e:
         _traza('putcall/fecha-pagina', _e)
+    print(f'  P100 fecha Cboe: {fecha_cboe} ({origen_fecha})' if fecha_cboe
+          else '  P100 fecha Cboe: sin fecha (ni selectedDate ni input value)')
     salida = {}
     for nombre, etiqueta in RATIOS_PUTCALL.items():
         if etiqueta in etiquetas:
