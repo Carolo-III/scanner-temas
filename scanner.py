@@ -658,7 +658,7 @@ def _calc_credito_oas():
         salida['ig_chg_20s_pb'] = round((ig[-1] - ig[-21]) * 100, 1)
     return salida
 
-def _calc_macro_regimen():
+def _calc_macro_regimen(sesion=None):
     """
     NUEVO (07/07) — series de regimen: US30Y (^TYX), WTI (CL=F) y credito high-yield via
     ratio HYG/IEF (bonos high-yield contra Tesoro 7-10a, con auto_adjust para que los
@@ -685,11 +685,29 @@ def _calc_macro_regimen():
     # los fallos mudos por excepcion capturada; este es el otro tipo de silencio, el del
     # dato que simplemente no viene, y no lo cubria ninguna traza.
     _faltan, _cortas = [], []
-    def _serie(tk, minimo=21):
+    # P101 (05/11/2026) — FILA DE MADRUGADA. CL=F (y DX-Y.NYB en get_macro_data) cotizan casi
+    # 24 horas: a las 02:00-03:00 de Nueva York Yahoo ya sirve una fila del DIA EN CURSO,
+    # incompleta, y la ultima fila de la serie dejaba de ser el cierre de la sesion procesada.
+    # Medido con la prueba interna del 30/10 al 04/11: el "cierre anterior" implicito en la
+    # variacion de cada dia NO coincidia con el valor publicado la vispera en DXY y WTI (4 de
+    # 4), y SI en VIX y US10Y. Arreglo: toda serie se recorta a la ULTIMA SESION CERRADA del
+    # SPY, salvo BTC, que cotiza 24/7 a proposito (P34 mide el fin de semana).
+    _recortadas = {}
+    _ses = pd.Timestamp(sesion).date() if sesion is not None else None
+    def _serie(tk, minimo=21, recortar=True):
         if tk not in close.columns:
             _faltan.append(tk)
             return pd.Series(dtype=float)
         s = close[tk].dropna()
+        if recortar and _ses is not None and len(s):
+            try:
+                _f = [pd.Timestamp(x).date() for x in s.index]
+                _post = [str(f) for f in _f if f > _ses]
+                if _post:
+                    _recortadas[tk] = _post
+                    s = s[[f <= _ses for f in _f]]
+            except Exception as _e:
+                _traza('macro/regimen-recorte', _e)
         if len(s) < minimo:
             _cortas.append(f'{tk}({len(s)})')
         return s
@@ -725,6 +743,7 @@ def _calc_macro_regimen():
         chg_20s = round(float(swti.iloc[-1] / swti.iloc[-21] - 1) * 100, 1)
         _niv = _nivel_extremo(list(swti.values.astype(float)))   # P77
         reg['wti'] = {'nivel': nivel, 'chg_1d_pct': chg_1d, 'chg_20s_pct': chg_20s,
+                      'fecha': str(pd.Timestamp(swti.index[-1]).date()),   # P101
                       'nivel_extremo': _niv,
                       'alerta': bool(abs(chg_20s) >= UMBRAL_WTI_PCT
                                      or (_niv or {}).get('alerta_nivel'))}
@@ -757,7 +776,7 @@ def _calc_macro_regimen():
     # NO entra en el ranking ni en el score: es demasiado ruidoso como para ponderar setups
     # (misma disciplina que la curva de tipos). Solo describe el regimen y, si cae con fuerza
     # en fin de semana, avisa de posible riesgo-off en la apertura del lunes.
-    sbtc = _serie('BTC-USD')
+    sbtc = _serie('BTC-USD', recortar=False)   # P101: BTC cotiza 24/7, no se recorta
     if len(sbtc) >= 8:
         nivel = round(float(sbtc.iloc[-1]), 0)
         chg_1d = round(float(sbtc.iloc[-1] / sbtc.iloc[-2] - 1) * 100, 1)
@@ -912,6 +931,15 @@ def _calc_macro_regimen():
                             if _n.get('alerta_nivel') else k)
         print('  Regimen macro: ' + ' | '.join(partes) +
               (' | ⚠️ ALERTAS: ' + ', '.join(_detalle) if alertas else ' | sin alertas de regimen'))
+    # P101 — linea SIEMPRE presente: dice a que sesion se recorto y que filas se descartaron.
+    if _ses is None:
+        print('  P101 regimen: sin sesion de referencia — se usa la ultima fila de cada serie '
+              '(comportamiento anterior)')
+    else:
+        _wti_f = (reg.get('wti') or {}).get('fecha', 'n/d')
+        _txt = ', '.join(f"{tk} ({', '.join(fs)})" for tk, fs in _recortadas.items())
+        print(f'  P101 regimen recortado a la sesion {_ses} | WTI fila {_wti_f} | '
+              + (f'filas descartadas: {_txt}' if _recortadas else 'ninguna fila posterior a la sesion'))
     return reg
 
 def _calc_estructura_indices():
@@ -967,14 +995,36 @@ def _calc_estructura_indices():
 def get_macro_data():
     try:
         tickers = ['^VIX', 'DX-Y.NYB', '^TNX']
-        raw = yf.download(tickers, period='5d', interval='1d',
+        # P101 — SPY entra en la MISMA descarga solo como reloj: su ultima fila con dato es la
+        # ultima sesion cerrada (o la de hoy, si se ejecuta en plena sesion). Ver _calc_macro_regimen.
+        raw = yf.download(tickers + ['SPY'], period='5d', interval='1d',
                           auto_adjust=True, progress=False, threads=True)
         if raw.empty: return {}
         close = raw['Close'] if isinstance(raw.columns, pd.MultiIndex) else raw
         result = {}
+        _sesion = None
+        try:
+            if 'SPY' in close.columns and len(close['SPY'].dropna()):
+                _sesion = pd.Timestamp(close['SPY'].dropna().index[-1]).date()
+        except Exception as _e:
+            _traza('macro/sesion-spy', _e)
+        _filas = []
         for tk in tickers:
             if tk in close.columns:
                 serie = close[tk].dropna()
+                _desc = []
+                if _sesion is not None and len(serie):
+                    try:
+                        _f = [pd.Timestamp(x).date() for x in serie.index]
+                        _desc = [str(f) for f in _f if f > _sesion]
+                        if _desc:
+                            serie = serie[[f <= _sesion for f in _f]]
+                    except Exception as _e:
+                        _traza('macro/recorte-sesion', _e)
+                if len(serie):
+                    _nombre = {'^VIX': 'VIX', 'DX-Y.NYB': 'DXY', '^TNX': 'US10Y'}[tk]
+                    _filas.append(f"{_nombre} {pd.Timestamp(serie.index[-1]).date()}"
+                                  + (f" (descartada {', '.join(_desc)})" if _desc else ''))
                 if len(serie) >= 2:
                     current = round(float(serie.iloc[-1]), 2)
                     prev    = round(float(serie.iloc[-2]), 2)
@@ -985,7 +1035,10 @@ def get_macro_data():
                         prev    = round(prev / 10, 2)
                     chg     = round(current - prev, 2)
                     chg_pct = round((current/prev - 1)*100, 1)
-                    result[tk] = {'current': current, 'prev': prev, 'chg': chg, 'chg_pct': chg_pct}
+                    result[tk] = {'current': current, 'prev': prev, 'chg': chg, 'chg_pct': chg_pct,
+                                  'fecha': str(pd.Timestamp(serie.index[-1]).date())}   # P101
+        # P101 — linea SIEMPRE presente con la fecha de la fila usada para cada serie.
+        print(f'  P101 filas macro (sesion {_sesion or "sin referencia"}): ' + ' | '.join(_filas))
         # Si ^TNX no devolvió datos, intentar ^TYX (otro ticker del bono 10a en Yahoo)
         if '^TNX' not in result:
             try:
@@ -1031,7 +1084,7 @@ def get_macro_data():
         # sites, y para que persista en data.json automaticamente (data['macro']['regimen']).
         # Cualquier fallo aqui deja intacto el comportamiento clasico (VIX/DXY/US10Y).
         try:
-            regimen = _calc_macro_regimen()
+            regimen = _calc_macro_regimen(sesion=_sesion)   # P101
             if regimen: result['regimen'] = regimen
         except Exception as _e:
             _traza('macro/regimen', _e)
@@ -2780,6 +2833,8 @@ def construir_entradas_resoluciones(resoluciones, fecha_panel):
             'ret_pct': r.get('ret_pct'), 'precio_entrada': r.get('precio_entrada'),
             'precio_actual': r.get('precio_actual'), 'fecha_deteccion': fecha_panel,
         })
+        if r.get('recuperada_p101'):
+            salida[-1]['recuperada_p101'] = True   # P101
     return salida
 
 def merge_resoluciones(rh, entradas, max_entradas=5000):
@@ -2851,6 +2906,28 @@ def anotar_resoluciones(evaluaciones, macro, ts):
         r['dias_desde_deteccion'] = dias
         r['reciente'] = (dias is None) or (dias <= DIAS_RESOLUCION_RECIENTE)
     _BREADTH_CACHE['resoluciones_hoy'] = (resoluciones, fecha_panel, es_cierre)
+    # P101 (05/11/2026) — A LA PERSISTENCIA VAN TODAS LAS RESOLUCIONES, NO UNA POR VALOR.
+    # resoluciones_por_ticker conserva UNA por ticker (la del setup mas reciente): es lo
+    # correcto para el INFORME, pero se usaba tambien para resoluciones_history.json, y cuando
+    # un valor tenia dos setups resueltos el mas antiguo NO se registraba nunca. Medido el
+    # 04/11 sobre data.json: 99 setups resueltos en las evaluaciones del dia, 41 valores, y 48
+    # de ellos sin fila en el historico (caso TER: el setup de la sesion del 20/10 toco stop el
+    # 28/10 y no consta, porque el del 21/10 ya estaba resuelto). Las filas que entran ahora
+    # sin registro previo, teniendo ya el mismo valor otra resolucion registrada, se marcan
+    # 'recuperada_p101': su fecha de deteccion es la de hoy y no la real, y su ret_pct es el
+    # precio de hoy, no el del stop; el analisis debe tratarlas aparte.
+    _tk_previos = {e.get('ticker') for e in rh}
+    todas = []
+    for e in (evaluaciones or []):
+        if e.get('resultado') not in ('stop', 'target'):
+            continue
+        r = dict(e)
+        _prev = previas.get((r.get('fecha_setup'), r.get('ticker'))) or {}
+        r['fecha_deteccion'] = _prev.get('fecha_deteccion') or fecha_panel
+        if not _prev and r.get('ticker') in _tk_previos and (r.get('dias') or 0) > 1:
+            r['recuperada_p101'] = True
+        todas.append(r)
+    _BREADTH_CACHE['resoluciones_todas'] = todas
     return resoluciones
 
 def actualizar_resoluciones_history(evaluaciones, macro, ts):
@@ -2871,9 +2948,17 @@ def actualizar_resoluciones_history(evaluaciones, macro, ts):
             return None
     if not isinstance(rh, list):
         rh = []
-    fusionado = merge_resoluciones(rh, construir_entradas_resoluciones(resoluciones, fecha_panel))
+    # P101 — todas las resueltas, no una por valor (ver anotar_resoluciones).
+    _todas = _BREADTH_CACHE.get('resoluciones_todas')
+    _fuente = _todas if _todas is not None else resoluciones
+    fusionado = merge_resoluciones(rh, construir_entradas_resoluciones(_fuente, fecha_panel))
     nuevas = len(fusionado) - len(rh)
+    _recup = sum(1 for e in fusionado
+                 if e.get('recuperada_p101') and e.get('fecha_deteccion') == fecha_panel)
     print(f'  Resoluciones persistidas: {nuevas} nuevas | total acumulado: {len(fusionado)}')
+    print(f'  P101 resoluciones: {len(_fuente)} resueltas hoy en '
+          f'{len({r.get("ticker") for r in _fuente})} valores, todas a la persistencia '
+          f'(antes solo 1 por valor) | {_recup} recuperadas de setups que no constaban')
     return fusionado
 
 # ============================================================
@@ -5038,8 +5123,233 @@ def actualizar_setups_registro(setups_hoy, valores, macro, ts, setups_history=No
           f'con parcial alcanzado | {_total_con_tp} filas con target_parcial')
     return fusionado
 
+# ============================================================
+# P101 (05/11/2026) — MIGRACION DE LOS HISTORICOS A FECHA DE SESION
+# Hasta el P101, setups_history.json se fechaba con el dia de Madrid y setups_registro.json
+# con la sesion. Esta migracion lleva lo ya grabado a la convencion nueva:
+#   1. setups_history: cada entrada pasa a su fecha de sesion, deducida por mayoria de sus
+#      setups emparejados con el registro (ticker, entry_lo, entry_hi, stop). Las entradas
+#      que caen en la misma sesion se FUSIONAN (base = la que mas casa con el registro; las
+#      marcas de parcial se conservan, la mas antigua gana).
+#   2. checkpoints, resoluciones y alertas: fecha_setup remapeada (por la fecha de la entrada
+#      o, fuera de la ventana, por el precio de entrada en el registro) y duplicados fuera.
+#   3. registro: las marcas de parcial de las filas dentro de la ventana se recalculan desde
+#      el historial migrado (recupera las perdidas y retira las que cayeron en otra fila).
+# Es IDEMPOTENTE: sobre datos ya migrados no cambia nada y no sube nada. Antes de la primera
+# escritura guarda copia de cada fichero en respaldo_p101/ (solo si la copia no existe).
+# ============================================================
+
+FICHEROS_MIGRACION_P101 = ('setups_history.json', 'setups_registro.json',
+                           'checkpoints_history.json', 'resoluciones_history.json',
+                           'alertas_history.json')
+
+def migrar_fechas_a_sesion(datos):
+    """Funcion PURA: recibe {fichero: lista} y devuelve ({fichero: lista migrada}, resumen)."""
+    import copy
+    from collections import Counter, defaultdict
+    H = copy.deepcopy(datos.get('setups_history.json') or [])
+    G = copy.deepcopy(datos.get('setups_registro.json') or [])
+    C = copy.deepcopy(datos.get('checkpoints_history.json') or [])
+    R = copy.deepcopy(datos.get('resoluciones_history.json') or [])
+    A = copy.deepcopy(datos.get('alertas_history.json') or [])
+    H = [e for e in H if isinstance(e, dict) and e.get('date')]
+
+    def _k4(s):
+        return (s.get('ticker'), s.get('entry_lo'), s.get('entry_hi'), s.get('stop'))
+
+    idx4, idx3, idx2 = defaultdict(set), defaultdict(set), defaultdict(set)
+    for g in G:
+        if not isinstance(g, dict) or not g.get('fecha_setup'):
+            continue
+        idx4[_k4(g)].add(g['fecha_setup'])
+        try:
+            m = round((float(g['entry_lo']) + float(g['entry_hi'])) / 2, 2)
+            idx3[(g.get('ticker'), m, g.get('stop'))].add(g['fecha_setup'])
+            idx2[(g.get('ticker'), m)].add(g['fecha_setup'])
+        except Exception:
+            pass
+
+    # 1) fecha de Madrid -> fecha de sesion, por mayoria
+    mapa = {}
+    for e in H:
+        votos = Counter()
+        for s in e.get('setups') or []:
+            for f in idx4.get(_k4(s), ()):
+                votos[f] += 1
+        if votos:
+            mapa[e['date']] = votos.most_common(1)[0][0]
+
+    def _ses(h):
+        return mapa.get(h, h)
+
+    grupos = defaultdict(list)
+    for e in H:
+        grupos[_ses(e['date'])].append(e)
+    H2, fusionadas = [], 0
+    remapeadas = sum(1 for e in H if _ses(e['date']) != e['date'])
+    for ses, es in grupos.items():
+        def _casa(e, ses=ses):
+            return sum(1 for s in e.get('setups') or [] if ses in idx4.get(_k4(s), ()))
+        es = sorted(es, key=lambda e: (-_casa(e), e['date']))
+        setups = [dict(s) for s in (es[0].get('setups') or [])]
+        por_clave = {_k4(s): s for s in setups}
+        tickers = {s.get('ticker') for s in setups}
+        for otro in es[1:]:
+            fusionadas += 1
+            for s in otro.get('setups') or []:
+                k = _k4(s)
+                if k in por_clave:
+                    d = por_clave[k]
+                    m = s.get('parcial_tocado_el')
+                    if m and (not d.get('parcial_tocado_el') or m < d['parcial_tocado_el']):
+                        d['parcial_tocado_el'] = m
+                        d['parcial_dias'] = s.get('parcial_dias')
+                elif s.get('ticker') not in tickers:
+                    setups.append(dict(s))
+                    por_clave[k] = setups[-1]
+                    tickers.add(s.get('ticker'))
+        nueva = dict(es[0])
+        nueva['date'], nueva['setups'] = ses, setups
+        H2.append(nueva)
+    H2.sort(key=lambda e: e['date'])
+
+    def _remap(rec, por_stop=True):
+        f, tk = rec.get('fecha_setup'), rec.get('ticker')
+        if f in mapa:
+            return mapa[f]
+        pe = rec.get('precio_entrada')
+        if pe is not None:
+            try:
+                pe = round(float(pe), 2)
+                cand = (idx3.get((tk, pe, rec.get('stop'))) if por_stop and rec.get('stop') is not None
+                        else idx2.get((tk, pe)))
+                if cand and len(cand) == 1:
+                    return next(iter(cand))
+            except Exception:
+                pass
+        return f
+
+    def _migrar_lista(lista, clave, orden, por_stop=True, por_precio=True):
+        salida, vistos, remap = [], set(), 0
+        for rec in sorted([r for r in lista if isinstance(r, dict)], key=orden):
+            nuevo = dict(rec)
+            f = _remap(rec, por_stop) if por_precio else mapa.get(rec.get('fecha_setup'), rec.get('fecha_setup'))
+            if f != rec.get('fecha_setup'):
+                remap += 1
+                nuevo['fecha_setup'] = f
+            k = clave(nuevo)
+            if k in vistos:
+                continue
+            vistos.add(k)
+            salida.append(nuevo)
+        return salida, remap
+
+    pos = {id(r): i for i, r in enumerate(C)}
+    C2, rc = _migrar_lista(C, lambda r: (r.get('ticker'), r.get('fecha_setup'), r.get('dias')),
+                           lambda r: pos.get(id(r), 0))
+    R2, rr = _migrar_lista(R, lambda r: (r.get('fecha_setup'), r.get('ticker')),
+                           lambda r: (r.get('fecha_deteccion') or '', r.get('ticker') or ''), por_stop=False)
+    A2, ra = _migrar_lista(A, lambda r: (r.get('fecha_setup'), r.get('ticker'), r.get('tipo')),
+                           lambda r: (r.get('fecha_alerta') or '', r.get('ticker') or '', r.get('tipo') or ''),
+                           por_precio=False)
+    R2.sort(key=lambda e: (e.get('fecha_deteccion') or '', e.get('ticker') or ''))
+    A2.sort(key=lambda e: (e.get('fecha_alerta') or '', e.get('ticker') or '', e.get('tipo') or ''))
+
+    # 3) marcas de parcial del registro dentro de la ventana del historial migrado
+    marcas, existe = {}, set()
+    for e in H2:
+        for s in e.get('setups') or []:
+            k = (e['date'],) + _k4(s)
+            existe.add(k)
+            if s.get('parcial_tocado_el'):
+                marcas[k] = (s.get('parcial_tocado_el'), s.get('parcial_dias'))
+    fechas_h = {e['date'] for e in H2}
+    recuperadas = corregidas = retiradas = 0
+    for fila in G:
+        if not isinstance(fila, dict) or fila.get('fecha_setup') not in fechas_h:
+            continue
+        k = (fila['fecha_setup'],) + _k4(fila)
+        if k not in existe:
+            continue
+        esperada = marcas.get(k)
+        actual = fila.get('parcial_tocado_el')
+        if esperada:
+            if actual != esperada[0]:
+                if actual:
+                    corregidas += 1
+                else:
+                    recuperadas += 1
+                fila['parcial_tocado_el'], fila['parcial_dias'] = esperada
+        elif actual:
+            retiradas += 1
+            fila.pop('parcial_tocado_el', None)
+            fila.pop('parcial_dias', None)
+
+    resumen = {
+        'historial': (len(H), len(H2), remapeadas, fusionadas),
+        'checkpoints': (len(C), len(C2), rc), 'resoluciones': (len(R), len(R2), rr),
+        'alertas': (len(A), len(A2), ra), 'marcas': (recuperadas, corregidas, retiradas),
+    }
+    resumen['texto'] = (
+        f"historial {len(H)}->{len(H2)} entradas ({remapeadas} refechadas, {fusionadas} fusionadas) | "
+        f"checkpoints {len(C)}->{len(C2)} ({rc} refechados) | resoluciones {len(R)}->{len(R2)} ({rr}) | "
+        f"alertas {len(A)}->{len(A2)} ({ra}) | marcas de parcial en el registro: "
+        f"{recuperadas} recuperadas, {corregidas} corregidas, {retiradas} retiradas")
+    nuevos = {'setups_history.json': H2, 'setups_registro.json': G, 'checkpoints_history.json': C2,
+              'resoluciones_history.json': R2, 'alertas_history.json': A2}
+    return nuevos, resumen
+
+def ejecutar_migracion_p101():
+    """Lee los cinco historicos, migra en memoria y, si algo cambia, sube copia + migrados."""
+    datos = {}
+    for fn in FICHEROS_MIGRACION_P101:
+        d, _ = get_github_file(fn)
+        if d == '__ERROR__':
+            print(f'  🔴 P101 migracion OMITIDA: fallo de lectura de {fn}. Se reintenta en la proxima ejecucion')
+            return
+        datos[fn] = d if isinstance(d, list) else []
+    try:
+        nuevos, resumen = migrar_fechas_a_sesion(datos)
+    except Exception as _e:
+        _traza('migracion-p101', _e)
+        print('  🔴 P101 migracion FALLIDA: no se toca ningun fichero')
+        return
+    cambiados = [fn for fn in FICHEROS_MIGRACION_P101
+                 if json.dumps(datos[fn], sort_keys=True) != json.dumps(nuevos[fn], sort_keys=True)]
+    if not cambiados:
+        print('  P101 migracion: nada que migrar (historicos ya fechados por sesion y sin duplicados)')
+        return
+    print('  P101 migracion: ' + resumen['texto'])
+    subida = {}
+    for fn in cambiados:
+        copia, _ = get_github_file(f'respaldo_p101/{fn}')
+        if copia == '__ERROR__':
+            print(f'  🔴 P101 migracion OMITIDA: no se pudo comprobar la copia de {fn}. Sin copia no se migra')
+            return
+        if copia is None:
+            subida[f'respaldo_p101/{fn}'] = json.dumps(clean_nan(datos[fn]), ensure_ascii=False)
+        subida[fn] = json.dumps(clean_nan(nuevos[fn]), ensure_ascii=False)
+    print(f'  P101 migracion: se suben {len(cambiados)} fichero(s) migrados'
+          + (f' y {sum(1 for k in subida if k.startswith("respaldo_p101/"))} copia(s) en respaldo_p101/'))
+    upload_files_to_github(subida)
+
 def update_setups_history(values, all_groups):
-    today = datetime.now(madrid).strftime('%Y-%m-%d')
+    # P101 (05/11/2026) — EL HISTORIAL SE FECHA POR SESION, NO POR EL DIA DE MADRID.
+    # Antes `today` era el dia de Madrid de la ejecucion; setups_registro.json, en cambio, usa
+    # la fecha de la sesion del panel. Con el cron de madrugada las dos difieren en un dia y
+    # dos ejecuciones sobre la MISMA sesion en distinto dia de Madrid creaban dos entradas
+    # identicas (medido: 08-09/10 18 de 18 setups, 10-12/10 24 de 24, 14-15/10 37 de 37),
+    # que checkpoints y resoluciones contaban dos veces; y el cruce de marcas de parcial con
+    # el registro, por (fecha, ticker), perdia o desplazaba marcas (17/10: 10 marcas, 4
+    # copiadas). Con la fecha de sesion, repetir una sesion REEMPLAZA su entrada.
+    # La migracion va AQUI y no en main(): asi la hacen tanto main() como la Celda 4 del
+    # notebook sin tocar el espejo. Es idempotente: si ya esta migrado, no lee mas que lo
+    # necesario y no sube nada.
+    ejecutar_migracion_p101()
+    _sesion = _BREADTH_CACHE.get('ultima_sesion')
+    today = _sesion or datetime.now(madrid).strftime('%Y-%m-%d')
+    print(f'  P101 historial fechado por sesion: {today}'
+          + ('' if _sesion else ' (SIN fecha de sesion del panel: se usa el dia de Madrid)'))
     history, _ = get_github_file('setups_history.json')
     if history == '__ERROR__':
         # FIX CRITICO (08/07): sin lectura fiable NO se actualiza nada — mejor perder el
@@ -5103,8 +5413,13 @@ def update_setups_history(values, all_groups):
     current_supertrend = {v['ticker']: v.get('supertrend') for v in values if v.get('supertrend')}
     evaluaciones = []
     _parciales_nuevos = []      # P92 — solo para la traza del log
-    for entrada in history[:-1]:  # todos menos hoy
-        dias = (datetime.now(madrid).date() - datetime.strptime(entrada['date'], '%Y-%m-%d').date()).days
+    _hoy_d = datetime.strptime(today, '%Y-%m-%d').date()
+    for entrada in history:
+        if entrada.get('date') == today:
+            continue  # la entrada de hoy no se evalua (P101: antes history[:-1])
+        # P101 — dias de sesion a sesion, no desde el dia de Madrid: con el cron de madrugada
+        # el reloj iba un dia por delante y desplazaba checkpoints, ventanas y edades.
+        dias = (_hoy_d - datetime.strptime(entrada['date'], '%Y-%m-%d').date()).days
         # RECALIBRADO (10/07) — EVALUACION DIARIA CONTINUA. Antes solo se evaluaba en los dias
         # exactos [5,10,20]: las alertas caducaban sin resolverse (casos reales: $VRSK con
         # alerta blanda el dia 20 y $UCTT con alerta DURA de salida total el dia 20
