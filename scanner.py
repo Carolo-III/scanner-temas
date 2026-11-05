@@ -5300,38 +5300,48 @@ def migrar_fechas_a_sesion(datos):
     return nuevos, resumen
 
 def ejecutar_migracion_p101():
-    """Lee los cinco historicos, migra en memoria y, si algo cambia, sube copia + migrados."""
+    """Lee los cinco historicos, migra en memoria y, si algo cambia, sube copia + migrados.
+
+    P101b (05/11/2026) — DEVUELVE los datos migrados (o None si no pudo leerlos), y
+    update_setups_history trabaja sobre ESOS datos en vez de releer GitHub. Motivo, visto en
+    el simulacro del 05/11: el simulacro no sube la migracion, update_setups_history releia
+    el historial SIN migrar, y la entrada fechada por Madrid el 04/11 (que es la sesion del
+    03/11) chocaba con la sesion de hoy (04/11) y se reemplazaba. En produccion pasaria lo
+    mismo si la subida de la migracion fallara. Con los datos en memoria, el historial que se
+    evalua y se sube esta migrado pase lo que pase con la subida.
+    """
     datos = {}
     for fn in FICHEROS_MIGRACION_P101:
         d, _ = get_github_file(fn)
         if d == '__ERROR__':
             print(f'  🔴 P101 migracion OMITIDA: fallo de lectura de {fn}. Se reintenta en la proxima ejecucion')
-            return
+            return None
         datos[fn] = d if isinstance(d, list) else []
     try:
         nuevos, resumen = migrar_fechas_a_sesion(datos)
     except Exception as _e:
         _traza('migracion-p101', _e)
         print('  🔴 P101 migracion FALLIDA: no se toca ningun fichero')
-        return
+        return None
     cambiados = [fn for fn in FICHEROS_MIGRACION_P101
                  if json.dumps(datos[fn], sort_keys=True) != json.dumps(nuevos[fn], sort_keys=True)]
     if not cambiados:
         print('  P101 migracion: nada que migrar (historicos ya fechados por sesion y sin duplicados)')
-        return
+        return nuevos
     print('  P101 migracion: ' + resumen['texto'])
     subida = {}
     for fn in cambiados:
         copia, _ = get_github_file(f'respaldo_p101/{fn}')
         if copia == '__ERROR__':
             print(f'  🔴 P101 migracion OMITIDA: no se pudo comprobar la copia de {fn}. Sin copia no se migra')
-            return
+            return None
         if copia is None:
             subida[f'respaldo_p101/{fn}'] = json.dumps(clean_nan(datos[fn]), ensure_ascii=False)
         subida[fn] = json.dumps(clean_nan(nuevos[fn]), ensure_ascii=False)
     print(f'  P101 migracion: se suben {len(cambiados)} fichero(s) migrados'
           + (f' y {sum(1 for k in subida if k.startswith("respaldo_p101/"))} copia(s) en respaldo_p101/'))
     upload_files_to_github(subida)
+    return nuevos
 
 def update_setups_history(values, all_groups):
     # P101 (05/11/2026) — EL HISTORIAL SE FECHA POR SESION, NO POR EL DIA DE MADRID.
@@ -5345,12 +5355,18 @@ def update_setups_history(values, all_groups):
     # La migracion va AQUI y no en main(): asi la hacen tanto main() como la Celda 4 del
     # notebook sin tocar el espejo. Es idempotente: si ya esta migrado, no lee mas que lo
     # necesario y no sube nada.
-    ejecutar_migracion_p101()
+    _migrados = ejecutar_migracion_p101()
     _sesion = _BREADTH_CACHE.get('ultima_sesion')
     today = _sesion or datetime.now(madrid).strftime('%Y-%m-%d')
     print(f'  P101 historial fechado por sesion: {today}'
           + ('' if _sesion else ' (SIN fecha de sesion del panel: se usa el dia de Madrid)'))
-    history, _ = get_github_file('setups_history.json')
+    if _migrados is not None:
+        # P101b — el historial MIGRADO en memoria, no una relectura de GitHub.
+        history = json.loads(json.dumps(_migrados['setups_history.json']))
+        print('  P101b historial tomado de la migracion en memoria '
+              f'({len(history)} entradas, ultima {history[-1]["date"] if history else "n/d"})')
+    else:
+        history, _ = get_github_file('setups_history.json')
     if history == '__ERROR__':
         # FIX CRITICO (08/07): sin lectura fiable NO se actualiza nada — mejor perder el
         # registro de setups de UNA ejecucion que machacar 30 dias de historico (paso de
