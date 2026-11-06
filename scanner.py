@@ -105,8 +105,18 @@ def download_prices(tickers, period='1y'):
                     if len(lotes) > 1: print(f'error tras 3 intentos: {e}')
     if not all_c:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    return (pd.concat(all_c, axis=1), pd.concat(all_v, axis=1),
-            pd.concat(all_h, axis=1), pd.concat(all_l, axis=1))
+    _c, _v = pd.concat(all_c, axis=1), pd.concat(all_v, axis=1)
+    _h, _l = pd.concat(all_h, axis=1), pd.concat(all_l, axis=1)
+    # P102 — maximos y minimos diarios en cache para el resultado definitivo de los setups
+    # (update_setups_history). Se acumulan entre llamadas (watchlist + universo).
+    try:
+        for _clave, _df in (('panel_high', _h), ('panel_low', _l)):
+            _prev = _BREADTH_CACHE.get(_clave)
+            _df = _df.loc[:, ~_df.columns.duplicated()]
+            _BREADTH_CACHE[_clave] = _df if _prev is None else _prev.combine_first(_df)
+    except Exception as _e:
+        _traza('panel/maximos-minimos', _e)
+    return _c, _v, _h, _l
 
 def diagnostico_entorno_fuente():
     """P98 (08/10/2026) — huella del ENTORNO y de la FUENTE, en TODAS las ejecuciones.
@@ -1936,6 +1946,16 @@ def _objetivo_escalonado(elo, ehi, stop, techo, ma200=None, high_recent=None, rb
         # Si no hay resistencia intermedia clara, el parcial es el punto medio del recorrido
         target_parcial = round(elo + riesgo * max(rb_minimo * 0.5, 1.0), 2)
         target_parcial = round(min(target_parcial, target_final), 2)
+    # P102 (06/11/2026) — D3: SUELO DE 1R PARA EL PARCIAL. El parcial era la resistencia
+    # inmediata (MM200 o maximo reciente), y en pullbacks esa resistencia esta pegada al
+    # precio: medido del 15/10 al 05/11, parciales a 0,05R (ALGN), 0,08R (EQT), 0,12R (EL),
+    # 0,13R (STE) del limite alto de la entrada. «Asegurar parte» ahi no significa nada.
+    # Si el parcial queda por debajo de entry_hi + 1R, sube a ese suelo; si el suelo ya no
+    # cabe por debajo del objetivo final, no hay parcial.
+    if target_parcial is not None and target_final is not None:
+        _suelo = round(ehi + riesgo, 2)
+        if target_parcial < _suelo:
+            target_parcial = _suelo if _suelo < target_final else None
     # FIX (11/07, caso real $ZS 08/07) — colision del parcial con el techo acotado: si el
     # techo (fib 0.764 / ATR / tope 5R) queda por debajo de la resistencia intermedia, el
     # min() de arriba iguala parcial y final ($ZS: ambos en $191.68) y el parcial pierde su
@@ -2386,10 +2406,28 @@ def calcular_tendencia(valores, tolerancia=0.15):
         else:
             mejor_alta = sesiones
 
+    # P102 (06/11/2026) — SALTO DE UNA SESION. Medido desde el ultimo extremo con tolerancia,
+    # un salto grande hoy hace que todo el ruido previo quepa en la tolerancia y la racha se
+    # estira hacia atras: el 05/11 el ratio de dispersion paso de 0,324 a 0,472 en un dia y el
+    # contador dijo «13 sesiones» cuando la vispera decia «plana, 0». Si el movimiento de HOY
+    # es mas del 60% del recorrido de la racha, la racha es de 1 sesion.
+    for _dir, _ses in (('bajista', mejor_baja), ('alcista', mejor_alta)):
+        if _ses >= 2 and len(limpios) > _ses:
+            _rec = abs(actual - limpios[-1 - _ses])
+            _hoy = actual - limpios[-2]
+            if _rec > 0 and abs(_hoy) > 0.6 * _rec and ((_hoy < 0) == (_dir == 'bajista')):
+                if _dir == 'bajista':
+                    mejor_baja = 1
+                else:
+                    mejor_alta = 1
     if mejor_baja >= 2 and mejor_baja > mejor_alta:
         return 'bajista', mejor_baja
     if mejor_alta >= 2 and mejor_alta > mejor_baja:
         return 'alcista', mejor_alta
+    if mejor_baja == 1 and mejor_alta < 1:
+        return 'bajista', 1
+    if mejor_alta == 1 and mejor_baja < 1:
+        return 'alcista', 1
     return 'plana', 0
 
 def merge_breadth_entry(bh, entrada, max_entradas=500):
@@ -2831,8 +2869,13 @@ def construir_entradas_resoluciones(resoluciones, fecha_panel):
             'fecha_setup': r.get('fecha_setup'), 'ticker': r.get('ticker'),
             'dias': r.get('dias'), 'resultado': r.get('resultado'),
             'ret_pct': r.get('ret_pct'), 'precio_entrada': r.get('precio_entrada'),
-            'precio_actual': r.get('precio_actual'), 'fecha_deteccion': fecha_panel,
+            # P102 — con resultado definitivo, el precio y la fecha son los de la resolucion
+            # (minimo/maximo del dia del toque), no los de hoy.
+            'precio_actual': r.get('precio_resolucion') or r.get('precio_actual'),
+            'fecha_deteccion': r.get('fecha_resolucion') or fecha_panel,
         })
+        if r.get('stop_con_hueco'):
+            salida[-1]['stop_con_hueco'] = True    # P102
         if r.get('recuperada_p101'):
             salida[-1]['recuperada_p101'] = True   # P101
     return salida
@@ -2882,7 +2925,7 @@ def anotar_resoluciones(evaluaciones, macro, ts):
         clave = (r.get('fecha_setup'), r.get('ticker'))
         _prev = previas.get(clave) or {}
         # Si no estaba registrada, se detecta HOY (aunque solo se persista si es cierre).
-        r['fecha_deteccion'] = _prev.get('fecha_deteccion') or fecha_panel
+        r['fecha_deteccion'] = _prev.get('fecha_deteccion') or r.get('fecha_resolucion') or fecha_panel
         # P96 (06/10/2026) — RETORNO CONGELADO de la resolucion.
         #
         # ret_pct se recalcula cada dia como precio_de_hoy / entrada, tambien para los setups
@@ -2901,7 +2944,7 @@ def anotar_resoluciones(evaluaciones, macro, ts):
         # primer dia detectado ES el dia de la resolucion). Si la resolucion es de hoy, no hay
         # entrada previa y los campos congelados valen lo mismo que los vivos.
         r['ret_pct_resolucion'] = _prev.get('ret_pct', r.get('ret_pct'))
-        r['precio_resolucion'] = _prev.get('precio_actual', r.get('precio_actual'))
+        r['precio_resolucion'] = _prev.get('precio_actual', r.get('precio_resolucion') or r.get('precio_actual'))  # P102
         dias = _dias_habiles_entre(r['fecha_deteccion'], fecha_panel)
         r['dias_desde_deteccion'] = dias
         r['reciente'] = (dias is None) or (dias <= DIAS_RESOLUCION_RECIENTE)
@@ -2919,11 +2962,11 @@ def anotar_resoluciones(evaluaciones, macro, ts):
     _tk_previos = {e.get('ticker') for e in rh}
     todas = []
     for e in (evaluaciones or []):
-        if e.get('resultado') not in ('stop', 'target'):
+        if e.get('resultado') not in ('stop', 'target', 'caducado'):   # P102: + caducado
             continue
         r = dict(e)
         _prev = previas.get((r.get('fecha_setup'), r.get('ticker'))) or {}
-        r['fecha_deteccion'] = _prev.get('fecha_deteccion') or fecha_panel
+        r['fecha_deteccion'] = _prev.get('fecha_deteccion') or r.get('fecha_resolucion') or fecha_panel
         if not _prev and r.get('ticker') in _tk_previos and (r.get('dias') or 0) > 1:
             r['recuperada_p101'] = True
         todas.append(r)
@@ -3056,7 +3099,7 @@ def merge_alertas(ah, entradas, evaluaciones, fecha_panel, max_entradas=MAX_ALER
         # que un setup que alcanzaba objetivo NUNCA se marcaba resuelto: al dejar de alertar
         # acababa clasificado como 'remitida', justo el contrario de lo que paso. Lo detecto
         # tools/analisis_rendimiento.py, que arrastraba el mismo error de nombre.
-        if res in ('stop', 'target') and e.get('desenlace') != res:
+        if res in ('stop', 'target', 'caducado') and e.get('desenlace') != res:   # P102: + caducado
             # stop/target mandan sobre 'remitida': la señal se recupero pero el setup
             # acabo resolviendose igual, y eso es lo que interesa saber.
             e['desenlace'] = res
@@ -4264,7 +4307,11 @@ def bloque_seguimiento(data):
         summary += ('\nSEGUIMIENTO — SETUPS RESUELTOS (el precio ya ha tocado stop u objetivo; '
                     'son hechos consumados, NO vigilancia ni recomendacion de entrada):\n')
         for r in recientes:
-            que = 'STOP ALCANZADO' if r['resultado'] == 'stop' else 'OBJETIVO ALCANZADO'
+            que = {'stop': 'STOP ALCANZADO', 'target': 'OBJETIVO ALCANZADO',
+                   'caducado': 'CADUCADO AL DIA 30 (sin stop ni objetivo; retorno de ese dia)'
+                   }.get(r['resultado'], r['resultado'])   # P102
+            if r.get('stop_con_hueco'):
+                que += ' CON HUECO DE APERTURA (la perdida real supero al stop)'
             # P96 — precio y retorno DE LA RESOLUCION (el dia en que se toco stop u objetivo),
             # no el marcaje a mercado de hoy: la posicion ya estaba cerrada.
             _pr = r.get('precio_resolucion', r.get('precio_actual'))
@@ -4277,8 +4324,9 @@ def bloque_seguimiento(data):
         if antiguas:
             _st = [r for r in antiguas if r['resultado'] == 'stop']
             _tg = [r for r in antiguas if r['resultado'] == 'target']
+            _cd = [r for r in antiguas if r['resultado'] == 'caducado']   # P102
             summary += (f'RESTO (ya reportadas antes o de menor magnitud, NO las detalles una por una): '
-                        f'{len(_st)} stops y {len(_tg)} objetivos siguen dentro de la ventana de '
+                        f'{len(_st)} stops, {len(_tg)} objetivos y {len(_cd)} caducados siguen dentro de la ventana de '
                         f'seguimiento. Resumelas en UNA sola frase.\n')
         summary += ('Menciona SIEMPRE estas resoluciones en la seccion de seguimiento, con una linea por '
                     'valor, ANTES de las alertas de posiciones abiertas. Un stop alcanzado es la '
@@ -4453,6 +4501,15 @@ def bloque_setups(valid, fundamentales):
         # PUNTO 7 — earnings dentro de la ventana de aviso (10-21 dias)
         if v.get('earnings_accion') == 'avisar':
             summary+=f' | EARNINGS EN {v["dias_earnings"]} DIAS ({v["earnings_date"]}) — AVISO OBLIGATORIO'
+        # P102 (06/11/2026) — D7: SUPERTREND YA BAJISTA AL CREAR. Se registraba
+        # (supertrend_pre_roto, supertrend_al_crear) pero el informe no lo decia: PODD, ALGN,
+        # ADBE y HSY fueron candidatos con la estructura que el propio sistema da por rota.
+        _st_c = v.get('supertrend') or {}
+        if _st_c.get('direccion') == 'bajista':
+            summary += (f' | SUPERTREND YA BAJISTA AL CREAR el setup (desde hace '
+                        f'{_st_c.get("dias_en_direccion_actual", "?")} sesiones, nivel '
+                        f'{_st_c.get("nivel", "?")}): si fuera una posicion abierta seria señal de '
+                        f'salida total — MENCIONARLO OBLIGATORIAMENTE en la entrada de este valor')
         # Datos fundamentales si disponibles
         fund = fundamentales.get(v['ticker'], {})
         if fund:
@@ -4977,7 +5034,7 @@ def resoluciones_por_ticker(evaluaciones):
     """
     por_ticker = {}
     for e in (evaluaciones or []):
-        if e.get('resultado') not in ('stop', 'target'):
+        if e.get('resultado') not in ('stop', 'target', 'caducado'):   # P102: + caducado
             continue
         tk = e.get('ticker')
         if tk is None:
@@ -5028,9 +5085,34 @@ def dedup_alertas_por_ticker(alertas):
 
 MAX_REGISTRO_SETUPS = 20000
 
-def construir_entradas_registro(setups_hoy, valores, fecha):
+def fechas_earnings_p102(tickers, hoy=None, max_workers=8):
+    """P102 (06/11/2026) — proxima fecha de resultados de cada valor, solo el calendario
+    (sin noticias), en paralelo. Para marcar en el registro los setups que nacen con
+    resultados a la vista: su stop mide la loteria del resultado, no la tecnica (NOW -27,5%,
+    GEN +20,6%). Devuelve {ticker: 'YYYY-MM-DD'} solo con fechas futuras o de hoy."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import date as _date
+    hoy = hoy or datetime.now(madrid).date()
+    def _una(tk):
+        try:
+            cal = yf.Ticker(tk).calendar
+            ed = cal.get('Earnings Date') if cal else None
+            ed = ed[0] if isinstance(ed, list) and ed else ed
+            if isinstance(ed, _date) and ed >= hoy:
+                return tk, ed.isoformat()
+        except Exception as _e:
+            _traza('registro/earnings', _e)
+        return tk, None
+    unicos = sorted({t for t in (tickers or []) if t})
+    if not unicos:
+        return {}
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        return {tk: f for tk, f in ex.map(_una, unicos) if f}
+
+def construir_entradas_registro(setups_hoy, valores, fecha, earnings=None):
     """Una fila por setup creado hoy, con su contexto completo al crearse."""
     por_ticker = {v.get('ticker'): v for v in (valores or []) if v.get('ticker')}
+    earnings = earnings or {}
     salida = []
     for s in (setups_hoy or []):
         v = por_ticker.get(s.get('ticker')) or {}
@@ -5049,6 +5131,8 @@ def construir_entradas_registro(setups_hoy, valores, fecha):
             # NO estan en setups_history y son justo las dos dimensiones que faltaban:
             'sct': v.get('sct'), 'ranking': v.get('ranking'),
             'cmf_al_crear': v.get('cmf'), 'adx_al_crear': v.get('adx'),
+            # P102 — proxima fecha de resultados al crearse (None = sin dato o sin fecha).
+            'earnings_al_crear': v.get('earnings_date') or earnings.get(s.get('ticker')),
         })
     return salida
 
@@ -5112,8 +5196,18 @@ def actualizar_setups_registro(setups_hoy, valores, macro, ts, setups_history=No
         return None
     if not isinstance(reg, list):
         reg = []
+    # P102 — fechas de resultados solo para los setups que van a entrar nuevos.
+    _ya = {(e.get('fecha_setup'), e.get('ticker')) for e in reg if isinstance(e, dict)}
+    _nuevos_tk = [s.get('ticker') for s in setups_hoy if (fecha, s.get('ticker')) not in _ya]
+    try:
+        _earn = fechas_earnings_p102(_nuevos_tk)
+    except Exception as _e:
+        _traza('registro/earnings-bloque', _e)
+        _earn = {}
+    print(f'  P102 resultados al crear: fecha conocida para {len(_earn)} de '
+          f'{len(set(_nuevos_tk))} valores nuevos en el registro')
     fusionado, nuevas = merge_registro_setups(
-        reg, construir_entradas_registro(setups_hoy, valores, fecha))
+        reg, construir_entradas_registro(setups_hoy, valores, fecha, earnings=_earn))
     # P92 — las marcas de parcial se copian DESPUES del merge, sobre el registro completo.
     marcados = marcar_parciales_en_registro(fusionado, setups_history)
     _total_marcados = sum(1 for e in fusionado if e.get('parcial_tocado_el'))
@@ -5343,6 +5437,38 @@ def ejecutar_migracion_p101():
     upload_files_to_github(subida)
     return nuevos
 
+def _primer_toque_p102(tk, fecha_setup, stop, target, hasta):
+    """P102 (06/11/2026) — D4: primera sesion POSTERIOR a la del setup en que el MINIMO
+    toca el stop o el MAXIMO toca el objetivo. Devuelve None si no ha ocurrido o si no hay
+    maximos/minimos del panel para ese valor (entonces se usa el cierre, como antes).
+
+    Si el mismo dia se tocan stop y objetivo, cuenta el stop (no se sabe el orden).
+    Precio de la resolucion: el del stop; si la sesion entera quedo por debajo (hueco de
+    apertura), el maximo de ese dia — cota optimista, porque el panel no guarda aperturas —
+    y la resolucion se marca 'hueco'."""
+    H, L = _BREADTH_CACHE.get('panel_high'), _BREADTH_CACHE.get('panel_low')
+    if H is None or L is None or tk not in getattr(L, 'columns', []) or tk not in getattr(H, 'columns', []):
+        return None
+    try:
+        f0, f1 = pd.Timestamp(fecha_setup).date(), pd.Timestamp(hasta).date()
+        lo, hi = L[tk].dropna(), H[tk].dropna()
+        for d in lo.index:
+            fd = pd.Timestamp(d).date()
+            if fd <= f0 or fd > f1:
+                continue
+            l = float(lo[d])
+            h = float(hi[d]) if d in hi.index and not pd.isna(hi[d]) else None
+            if stop is not None and l <= stop:
+                hueco = h is not None and h < stop
+                return {'resultado': 'stop', 'fecha': str(fd),
+                        'precio': round(h if hueco else float(stop), 2), 'hueco': hueco}
+            if target is not None and h is not None and h >= target:
+                return {'resultado': 'target', 'fecha': str(fd),
+                        'precio': round(float(target), 2), 'hueco': False}
+    except Exception as _e:
+        _traza('setups/primer-toque', _e)
+    return None
+
 def update_setups_history(values, all_groups):
     # P101 (05/11/2026) — EL HISTORIAL SE FECHA POR SESION, NO POR EL DIA DE MADRID.
     # Antes `today` era el dia de Madrid de la ejecucion; setups_registro.json, en cambio, usa
@@ -5429,6 +5555,8 @@ def update_setups_history(values, all_groups):
     current_supertrend = {v['ticker']: v.get('supertrend') for v in values if v.get('supertrend')}
     evaluaciones = []
     _parciales_nuevos = []      # P92 — solo para la traza del log
+    _resueltos_nuevos = []      # P102 — D4
+    _caducados_nuevos = []      # P102 — D5
     _hoy_d = datetime.strptime(today, '%Y-%m-%d').date()
     for entrada in history:
         if entrada.get('date') == today:
@@ -5472,7 +5600,12 @@ def update_setups_history(values, all_groups):
         # checkpoints <=20, duras <=30) y una posicion de 6 semanas ya no es un trade de
         # este sistema.
         HORIZONTE_DURAS = 30
-        if dias < 1 or dias > HORIZONTE_DURAS: continue
+        if dias < 1: continue
+        # P102 (06/11/2026) — D5: CADUCADO EN VEZ DE DESAPARECER. Antes, pasado el dia 30
+        # el setup dejaba de evaluarse y desaparecia sin resolucion (AMD el 15/10 con +15,1%
+        # y señal de salida, INTC, MTSI, DVN). Ahora, la primera vez que supera el horizonte,
+        # se resuelve como 'caducado' con su retorno de ese dia, una sola vez.
+        caducando = dias > HORIZONTE_DURAS
         dentro_horizonte_blandas = dias <= HORIZONTE_BLANDAS
         es_checkpoint = dias in [5, 10, 20]
         # NUEVO (06/07) — sesiones de mercado aproximadas desde el setup (floor de dias*5/7).
@@ -5486,9 +5619,47 @@ def update_setups_history(values, all_groups):
             if not precio_actual: continue
             precio_entrada = (s['entry_lo'] + s['entry_hi']) / 2
             ret_pct = round((precio_actual / precio_entrada - 1) * 100, 1)
-            stop_tocado = precio_actual <= s['stop']
-            target_tocado = precio_actual >= s['target']
-            resultado = 'stop' if stop_tocado else ('target' if target_tocado else 'abierto')
+            # P102 (06/11/2026) — D4: RESULTADO DEFINITIVO. Antes se recalculaba cada dia con
+            # el cierre de hoy: un stop perforado y recuperado volvia a 'abierto' (MU del
+            # 13/10: stop el 16, abierto el 21-22 con alerta de «reducir al 50%», stop el 23,
+            # abierto el 27). Medido: 65 de 191 stops volvian a abierto. Ahora el PRIMER toque
+            # (por el minimo o el maximo del dia, como se ejecuta una orden real) es
+            # definitivo y queda pegado en la entrada del historial, igual que la marca de
+            # parcial (P92). Retorno y fecha de la resolucion quedan congelados.
+            _nuevo = False
+            if not s.get('resultado_def'):
+                _toque = _primer_toque_p102(tk, entrada['date'], s.get('stop'), s.get('target'), today)
+                if _toque:
+                    _nuevo = True
+                    s['resultado_def'] = _toque['resultado']
+                    s['resuelto_el'] = _toque['fecha']
+                    s['precio_resolucion'] = _toque['precio']
+                    if _toque['hueco']:
+                        s['stop_con_hueco'] = True
+                    _resueltos_nuevos.append(f"{tk} {_toque['resultado']} {_toque['fecha']}"
+                                             + (' (hueco)' if _toque['hueco'] else ''))
+            if caducando and s.get('resultado_def') and not _nuevo:
+                continue   # resuelto antes del horizonte: ya contado, no se repite
+            if caducando and s.get('caducado_el'):
+                continue   # ya caducado: una sola vez
+            if caducando and not s.get('resultado_def'):
+                # Sin maximos/minimos del panel no se puede descartar un toque previo: se
+                # comporta como antes (fuera de horizonte, sin evaluar) en vez de caducar a ciegas.
+                _L = _BREADTH_CACHE.get('panel_low')
+                if _L is None or tk not in getattr(_L, 'columns', []):
+                    continue
+            if s.get('resultado_def'):
+                resultado = s['resultado_def']
+                ret_pct = round((s['precio_resolucion'] / precio_entrada - 1) * 100, 1)
+            elif caducando:
+                resultado = 'caducado'
+                s['caducado_el'] = today
+                s['ret_caducado'] = ret_pct
+                _caducados_nuevos.append(f'{tk} ({ret_pct:+.1f}%)')
+            else:
+                stop_tocado = precio_actual <= s['stop']
+                target_tocado = precio_actual >= s['target']
+                resultado = 'stop' if stop_tocado else ('target' if target_tocado else 'abierto')
             # P92 (25/09/2026) — OBJETIVO PARCIAL ALCANZADO: marca PERSISTENTE y PEGAJOSA.
             #
             # MOTIVO. La evaluacion del sistema solo conoce dos desenlaces, stop y target
@@ -5509,7 +5680,7 @@ def update_setups_history(values, all_groups):
             # target_parcial o no fueron vigilados: apareceran sin marca y hay que excluirlos
             # del calculo, no contarlos como parcial no alcanzado.
             tp = s.get('target_parcial')
-            if tp and precio_actual >= tp and not s.get('parcial_tocado_el'):
+            if tp and not caducando and precio_actual >= tp and not s.get('parcial_tocado_el'):  # P102: no tras el dia 30
                 s['parcial_tocado_el'] = today
                 s['parcial_dias'] = dias        # dias naturales desde la creacion del setup
                 _parciales_nuevos.append(f"{tk} (dia {dias})")
@@ -5570,9 +5741,15 @@ def update_setups_history(values, all_groups):
             cmf_posterior = cmf_confirmado and cmf_dias_neg < sesiones_desde_setup
             alerta_cmf = cmf_posterior and not alerta_supertrend
             cmf_pre_negativo = cmf_confirmado and not cmf_posterior
+            if caducando and resultado == 'abierto':
+                continue   # salvaguarda: pasado el horizonte no se vigila nada abierto
             evaluaciones.append({
                 'fecha_setup': entrada['date'],
-                'checkpoint': es_checkpoint,
+                # P102 — fecha y precio de la resolucion definitiva (D4); None si sigue abierto.
+                'fecha_resolucion': s.get('resuelto_el') or (s.get('caducado_el') if resultado == 'caducado' else None),
+                'precio_resolucion': s.get('precio_resolucion'),
+                'stop_con_hueco': bool(s.get('stop_con_hueco')),
+                'checkpoint': es_checkpoint and not caducando,
                 'dias':        dias,
                 'ticker':      tk,
                 'group':       s['group'],
@@ -5604,6 +5781,14 @@ def update_setups_history(values, all_groups):
     _con_tp = sum(1 for e in history for _s in e.get('setups', []) if _s.get('target_parcial'))
     if _parciales_nuevos:
         print('  Parcial alcanzado HOY (marca nueva): ' + ', '.join(_parciales_nuevos))
+    # P102 — lineas SIEMPRE presentes.
+    _hay_panel = _BREADTH_CACHE.get('panel_low') is not None
+    print(f'  P102 resultado definitivo (minimo/maximo del dia): {len(_resueltos_nuevos)} nuevos'
+          + ('' if _hay_panel else ' | SIN maximos/minimos del panel: se usa el cierre (comportamiento anterior)')
+          + (': ' + ', '.join(_resueltos_nuevos[:25]) + (' …' if len(_resueltos_nuevos) > 25 else '')
+             if _resueltos_nuevos else ''))
+    print(f'  P102 caducados hoy (dia 30 sin stop ni objetivo): {len(_caducados_nuevos)}'
+          + (': ' + ', '.join(_caducados_nuevos) if _caducados_nuevos else ''))
     print(f'  Parciales: {_con_marca} setups marcados en el historico, sobre {_con_tp} con '
           f'target_parcial definido')
     return history, evaluaciones
@@ -6233,12 +6418,13 @@ def main():
         if _resoluciones:
             print(f'  🎯 SETUPS RESUELTOS ({len(_resoluciones)}): stop u objetivo alcanzado')
             for _r in _resoluciones:
-                _que = 'STOP' if _r['resultado'] == 'stop' else 'OBJETIVO'
+                _que = {'stop': 'STOP', 'target': 'OBJETIVO', 'caducado': 'CADUCADO'}.get(_r['resultado'], _r['resultado'])   # P102
                 _pr = _r.get('precio_resolucion', _r.get('precio_actual'))   # P96
                 _rr = _r.get('ret_pct_resolucion', _r.get('ret_pct'))
                 print(f'     {_r["ticker"]}: setup del {_r["fecha_setup"]} | {_que} alcanzado | '
                       f'entrada ${_r["precio_entrada"]} -> ${_pr} | ret={_rr}% '
-                      f'(al resolverse {_r.get("fecha_deteccion", "?")})')
+                      f'(al resolverse {_r.get("fecha_deteccion") or _r.get("fecha_resolucion") or "?"})'
+                      + (' CON HUECO' if _r.get('stop_con_hueco') else ''))   # P102
         alertas_cmf = dedup_alertas_por_ticker([e for e in evaluaciones if e.get('alerta_cmf')])
         alertas_st = dedup_alertas_por_ticker([e for e in evaluaciones if e.get('alerta_supertrend')])
         pre_rotos = [e for e in evaluaciones if e.get('supertrend_pre_roto')]
