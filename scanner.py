@@ -1800,7 +1800,7 @@ def calc_sct(adx, rsi, macd_hist, pct_b, squeeze, cmf, obv_trend):
         elif obv_trend >= 0.80: score += 3
     return round(score, 1)
 
-def calc_riesgo(sct, rsi, cmf, adx):
+def calc_riesgo(sct, rsi, cmf, adx, tipo=None):
     """
     PUNTO 1 — Logica de RIESGO calculada en Python, no en el prompt de Claude.
     Elimina la correccion manual que antes hacia Claude sobre una formula mecanica inconsistente.
@@ -1827,18 +1827,43 @@ def calc_riesgo(sct, rsi, cmf, adx):
     if cmf is None: cmf = -1
     if adx is None: adx = 0
 
-    bajo = (sct >= 80) and (55 <= rsi <= 68) and (cmf >= 0.10) and (adx >= 20)
-    if bajo:
-        return 'BAJO', f'SCT>=80 ({sct}), RSI 55-68 ({rsi}), CMF>=0.10 ({cmf}), ADX>=20 ({adx}) — las 4 condiciones cumplidas'
-
-    motivos_medio = []
-    if 70 <= sct <= 79: motivos_medio.append(f'SCT en 70-79 ({sct})')
-    if 68 < rsi <= 70: motivos_medio.append(f'RSI en 68-70 ({rsi})')
-    if 0.05 <= cmf <= 0.09: motivos_medio.append(f'CMF en 0.05-0.09 ({cmf})')
-    if motivos_medio:
-        return 'MEDIO', ' + '.join(motivos_medio)
-
-    return 'ALTO', 'ninguna condicion de BAJO o MEDIO se cumple (no debe llegar a Claude)'
+    # P103 (07/11/2026) — D1: REGLA POR FRANJAS, MONOTONA. La regla anterior solo daba MEDIO
+    # si el valor caia en una franja concreta (SCT 70-79, RSI 68-70, CMF 0.05-0.09); todo lo
+    # demas era ALTO y se excluia. Consecuencia perversa: un RSI por encima de 70 no contaba,
+    # y CASY (RSI 93.8, SCT 75) pasaba como MEDIO «por el SCT», mientras el mismo valor con
+    # SCT 85 habria sido ALTO y excluido: MEJORAR el SCT lo eliminaba. Casos: CASY, INTU (1º
+    # del ranking con RSI 88.9, stop en 3 sesiones), ALLE, NKE, ROP, HONA (stop en 1 sesion),
+    # PEG, PPG. Ahora cada indicador tiene tres franjas (bien / MEDIO / ALTO), el peor manda,
+    # y mejorar un indicador nunca empeora el riesgo:
+    #   SCT : >=80 bien | 70-79 MEDIO | <70 ALTO
+    #   CMF : >=0.10 bien | 0.05-0.10 MEDIO (cierra el hueco 0.09-0.10) | <0.05 ALTO
+    #   ADX : >=20 bien | <20 ALTO (ya era filtro obligatorio)
+    #   RSI : 55-68 bien | 68-70 MEDIO | 45-55 MEDIO (momentum flojo)| <45 ALTO
+    #         >70: en PULLBACKS es ALTO (un retroceso con RSI>70 no es un pullback: no alivio
+    #         nada); en RUPTURAS es MEDIO con aviso (en una ruptura de momentum es normal).
+    es_pullback = str(tipo or '').startswith('Pullback')
+    altos, medios = [], []
+    if sct < 70: altos.append(f'SCT<70 ({sct})')
+    elif sct < 80: medios.append(f'SCT en 70-79 ({sct})')
+    if cmf < 0.05: altos.append(f'CMF<0.05 ({cmf})')
+    elif cmf < 0.10: medios.append(f'CMF en 0.05-0.10 ({cmf})')
+    if adx < 20: altos.append(f'ADX<20 ({adx})')
+    if rsi > 70:
+        if es_pullback:
+            altos.append(f'pullback con RSI>70 ({rsi}): el retroceso no alivio la sobrecompra')
+        else:
+            medios.append(f'RSI>70 en ruptura ({rsi}): sobrecompra, momentum tensionado')
+    elif rsi > 68:
+        medios.append(f'RSI en 68-70 ({rsi})')
+    elif rsi < 45:
+        altos.append(f'RSI<45 ({rsi})')
+    elif rsi < 55:
+        medios.append(f'RSI en 45-55 ({rsi}): momentum flojo')
+    if altos:
+        return 'ALTO', ' + '.join(altos) + ' (no debe llegar a Claude)'
+    if medios:
+        return 'MEDIO', ' + '.join(medios)
+    return 'BAJO', f'SCT>=80 ({sct}), RSI 55-68 ({rsi}), CMF>=0.10 ({cmf}), ADX>=20 ({adx}) — las 4 condiciones cumplidas'
 
 def price_stats(p, h, v_series):
     try:
@@ -3803,7 +3828,8 @@ def analyze_universe(grps, bench, close_df, vol_df, high_df=None, low_df=None, s
             # PUNTO 1 — RIESGO calculado en Python con la formula exacta (BAJO/MEDIO/ALTO)
             # Devuelve tambien el motivo exacto que dispara la clasificacion, para que Claude
             # lo use literalmente en el informe en vez de inferir una causa no verificada.
-            riesgo_val, riesgo_motivo = calc_riesgo(sct_val, rsi_val, cmf_val, adx_val)
+            riesgo_val, riesgo_motivo = calc_riesgo(sct_val, rsi_val, cmf_val, adx_val,
+                                                    tipo=er.get('tipo'))   # P103: la regla del RSI depende del tipo
             # PUNTO 18 — pullback con RSI en sobrecompra (>=70): la clasificacion de pullback
             # solo mira la distancia a la media (±4% de MM50/MM200), no exige que el retroceso
             # haya aliviado la sobrecompra. Un "pullback" con RSI 70+ es un retroceso minimo
@@ -4497,7 +4523,7 @@ def bloque_setups(valid, fundamentales):
         # PUNTO 19 — desglose auditable del ranking
         dsg = v.get('ranking_desglose')
         if dsg:
-            summary+=f' (desglose: SCT {dsg["sct"]}/40 + R/B {dsg["rb"]}/20 + sector {dsg["sector"]}/20 + CMF {dsg["cmf"]}/20)'
+            summary+=f' (desglose: SCT {dsg["sct"]}/50 + sector {dsg["sector"]}/25 + CMF {dsg["cmf"]}/25; el R/B no puntua, solo filtra)'   # P103
         # PUNTO 7 — earnings dentro de la ventana de aviso (10-21 dias)
         if v.get('earnings_accion') == 'avisar':
             summary+=f' | EARNINGS EN {v["dias_earnings"]} DIAS ({v["earnings_date"]}) — AVISO OBLIGATORIO'
@@ -4797,8 +4823,9 @@ def construir_prompt(data, externos=None):
     if _excluidos_vol:
         print('  Candidatos excluidos por volumen minimo: ' +
               ', '.join(f'{v["ticker"]}({round(v["vol_media_30d"]/1000)}K)' for v in _excluidos_vol))
-    # PUNTO 3 — ranking calculado en Python con tope R/B=5, no delegado a Claude.
-    # Formula: SCT 40% + R/B normalizado (tope 5) 20% + fuerza sectorial del grupo 20% + CMF 20%
+    # PUNTO 3 — ranking calculado en Python, no delegado a Claude.
+    # Formula (P103, 07/11/2026): SCT 50% + fuerza sectorial del grupo 25% + CMF 25%. Hasta el
+    # P103: SCT 40 + R/B normalizado (tope 5) 20 + sector 20 + CMF 20.
     # PUNTO 31 (01/08/2026) — score sectorial por % sobre MM200 (fortaleza estructural real)
     # en lugar de la media de scores de los miembros del grupo.
     # ANTES: sector_n = media de scores de los miembros / 100
@@ -4820,7 +4847,6 @@ def construir_prompt(data, externos=None):
     _grupos_no_comparables = {g['group'] for g in groups if not g.get('tema_comparable')}
     for v in valid:
         sct_n = (v.get('sct') or 0) / 100.0
-        rb_n = min((v.get('entry_range',{}).get('rr') or 0), 5.0) / 5.0
         if v['group'] in _grupos_no_comparables:
             sector_n = _mm200_neutro / 100.0   # P63: neutro, no premio por grupo pequeño
             v['sector_neutralizado'] = True
@@ -4828,13 +4854,20 @@ def construir_prompt(data, externos=None):
             sector_n = group_mm200_map.get(v['group'], 0) / 100.0
         cmf_raw = v.get('cmf')
         cmf_n = min(max((cmf_raw if cmf_raw is not None else 0) / 0.3, 0), 1)  # 0.3 CMF ~ tope practico
-        v['ranking'] = round((sct_n*0.40 + rb_n*0.20 + sector_n*0.20 + cmf_n*0.20) * 100, 1)
+        # P103 (07/11/2026) — D2: EL R/B SALE DEL RANKING. Con el objetivo topado en 5R, el
+        # componente (min(R/B,5)/5 x 20) saturaba en muchos setups: les regalaba hasta 8
+        # puntos sin que cambiara la tesis (NKE primera tres dias con R/B 5.0; el 23/10 tres de
+        # cinco candidatos saturados; MDT pasaba de 2.9 a 5.0 de un dia a otro solo porque
+        # subia el stop). El 5R es un tope artificial: puntuar por el premia la regla, no el
+        # setup. El R/B sigue siendo FILTRO (>=2, sin cambios) y se muestra en la tabla.
+        # Pesos reescalados a 100 en la misma proporcion: SCT 50 + sector 25 + CMF 25.
+        _c_sct, _c_sec, _c_cmf = round(sct_n*50, 1), round(sector_n*25, 1), round(cmf_n*25, 1)
+        v['ranking'] = round(_c_sct + _c_sec + _c_cmf, 1)
         # PUNTO 19 — desglose del ranking (13/07/2026): los cuatro componentes ya ponderados
         # (suman exactamente el ranking) se persisten y se emiten en el summary para que el
         # informe sea auditable sin abrir el codigo — respuesta a la critica externa de
         # "ranking caja negra". Pesos fijos: SCT 40 + R/B 20 + sector 20 + CMF 20 (sobre 100).
-        v['ranking_desglose'] = {'sct': round(sct_n*40, 1), 'rb': round(rb_n*20, 1),
-                                 'sector': round(sector_n*20, 1), 'cmf': round(cmf_n*20, 1)}
+        v['ranking_desglose'] = {'sct': _c_sct, 'sector': _c_sec, 'cmf': _c_cmf}   # P103: sin R/B
     valid = sorted(valid, key=lambda x: x.get('ranking', 0), reverse=True)
 
     # P64 (12/08/2026) — FASE DE RED, extraida a recolectar_datos_candidatos(). A partir de
@@ -4898,6 +4931,10 @@ def construir_prompt(data, externos=None):
         'PUNTO 12-13 — OBJETIVO CON TECHO NO ESTANDAR: en la inmensa mayoria de setups el objetivo final se deriva del maximo de 52 semanas (techo estandar, no necesita explicacion en el texto). Si el setup incluye una nota "OBJETIVO:", significa que el valor sufrio una correccion superior al 20% desde su maximo de 52 semanas, lo que invalida ese maximo como techo realista a corto plazo — el sistema ha sustituido el techo por un retroceso de Fibonacci de esa caida (61.8% o 76.4%, el que deje margen suficiente) o, si ninguno de los dos da margen, por una proyeccion de rango medio (ATR). Cuando esto ocurra, menciona brevemente en el parrafo del setup que el objetivo es mas conservador de lo habitual precisamente porque el valor no ha recuperado el terreno perdido tras esa correccion, en vez de asumir que el objetivo viene del maximo historico sin matizar. No necesitas explicar la formula exacta (61.8 vs 76.4 vs ATR), basta con transmitir que el objetivo esta acotado por una correccion previa relevante. '
         'FORMATO: en la seccion ENTRADAS, separa cada recomendacion con un salto de linea — una recomendacion por parrafo independiente. Escribe siempre el ticker con el simbolo dolar delante: $AZTA, $TECH, $CDW, etc. '
         'Al final de la seccion ENTRADAS incluye una tabla comparativa con columnas: TICKER | SETUP | R/B | SCT | RIESGO | RANKING. RIESGO y RANKING vienen YA CALCULADOS en los datos (campos RIESGO: y RANKING: de cada setup) — usalos exactamente como aparecen, NO los recalcules ni apliques ninguna formula propia sobre ellos. Cada setup incluye ademas "motivo exacto" entre parentesis junto al RIESGO: esa es la UNICA causa real que la formula evaluo para clasificarlo como BAJO o MEDIO. Cuando expliques por que un setup tiene ese RIESGO, usa literalmente ese motivo (reformulado en prosa natural, no copiado palabra por palabra) — NUNCA inventes ni infieras una causa distinta aunque suene plausible (por ejemplo, no atribuyas el RIESGO al tipo de setup —ruptura pendiente, pullback, etc.— salvo que el motivo exacto mencione ADX o RSI relacionados con eso; el tipo de setup y el RIESGO son cosas independientes). '
+        # P103 (07/11/2026) — D8: ORDEN OBLIGATORIO. El modelo altero el orden en cinco informes
+        # seguidos; mientras el ranking estaba roto (huecos del RSI y R/B saturado) a veces
+        # acertaba al relegar candidatos, pero con el ranking arreglado el orden es el del sistema.
+        'ORDEN OBLIGATORIO: presenta los setups en la seccion ENTRADAS y en la tabla EXACTAMENTE en el orden en que aparecen en los datos, que es el del RANKING de mayor a menor. NO los reordenes por tu propio criterio ni los agrupes por sector o por tipo. Si un candidato bien clasificado tiene un riesgo particular (RSI alto, resultados cerca, Supertrend roto), dilo en su parrafo y en la conclusion, pero sin cambiar su posicion. '
         'PUNTO 17 — CORRELACION ENTRE CANDIDATOS: si aparece el bloque CORRELACION ENTRE CANDIDATOS, usalo para evaluar la CARTERA como conjunto, no cada idea aislada. Correlacion >=0.70 entre dos candidatos significa que en la practica son una sola apuesta con dos nombres: si ambos se toman, la diversificacion real es menor de lo que aparenta y una misma sorpresa macro (tipos, growth, sector) golpea a la vez a ambos. Las betas indican la sensibilidad de cada candidato al mercado: beta agregada alta = cartera que amplifica al SPY. Integra esta lectura en un parrafo breve dentro de la CONCLUSION (o en RIESGOS DEL ESCENARIO si hay AVISO CONCENTRACION), nombrando los pares concretos y su correlacion. Si hay CONCENTRACION SECTORIAL (dos o mas candidatos del mismo tema), menciona que comparten motor sectorial. Esta informacion es CONTEXTO DE CARTERA: NO invalida ni recalcula el RIESGO ni el RANKING individual de ningun setup, y NO debe usarse para descartar candidatos — solo para advertir sobre tomarlos simultaneamente y sugerir, si aplica, dimensionar posiciones considerando la correlacion. Si el bloque no aparece, no menciones correlaciones. '
         'PUNTO 18 — PULLBACK EN SOBRECOMPRA: si un setup lleva la marca AVISO: PULLBACK CON RSI EN SOBRECOMPRA, significa que el valor cotiza cerca de su media movil de referencia PERO su RSI sigue >=70: el retroceso ha sido tan superficial que no ha aliviado la sobrecompra, por lo que hablar de "pullback de calidad" no es convincente. Redactalo con ese matiz explicito (retroceso minimo, momentum aun sobrecalentado, mayor probabilidad de que la correccion no haya terminado) y evita presentarlo como una entrada de libro en soporte. La marca NO cambia el RIESGO ni el RANKING calculados — es un matiz de calidad del setup que el lector debe conocer. Si ningun setup lleva la marca, no menciones este concepto. '
         'PUNTO 19/31 — DESGLOSE DEL RANKING: cada setup incluye junto al RANKING su desglose entre parentesis (SCT x/40 + R/B x/20 + sector x/20 + CMF x/20; los cuatro componentes suman exactamente el ranking). El componente SECTOR (hasta 20 puntos) refleja desde el 01/08/2026 el % de valores del sector que cotizan sobre su MM200: un sector donde el 80% de sus miembros estan sobre la MM200 puntua 16/20 (0.80 × 20); el componente es una medida de fortaleza estructural del sector, no de calidad tecnica individual. Usalo cuando compares candidatos entre si: un setup con sector x/20 alto tiene el viento del sector de cola; uno con sector bajo compite contra corriente. No recites el desglose completo de cada setup — usalo para fundamentar comparaciones concretas. NUNCA inventes pesos ni componentes distintos de los cuatro dados. '
