@@ -969,7 +969,7 @@ def _calc_estructura_indices():
     Es contexto tactico, NO regimen: el regimen sigue siendo la MM200.
     """
     UMBRAL_TEST_MM50 = 1.0  # % de distancia a la MM50 que cuenta como "testando el nivel"
-    raw = yf.download(['SPY', 'QQQ'], period='6mo', interval='1d',
+    raw = yf.download(['SPY', 'QQQ'], period='14mo', interval='1d',   # P104: 14 meses para la MM200
                       auto_adjust=True, progress=False, threads=True)
     if raw.empty: return {}
     close = raw['Close'] if isinstance(raw.columns, pd.MultiIndex) else raw
@@ -995,16 +995,35 @@ def _calc_estructura_indices():
                    'dist_pct': dist_pct, 'estado': estado, 'sesiones_en_estado': int(sesiones),
                    'cruce_reciente': bool(cruce), 'test_nivel': bool(test),
                    'alerta': bool(cruce or test)}
+        # P104 (08/11/2026) — MM200 tambien para el QQQ (y para el SPY, con su distancia):
+        # el 02/11 y el 05/11 el Nasdaq 100 perdio su MM200 y el informe no podia decirlo.
+        ma200 = p.rolling(200).mean()
+        if not ma200.dropna().empty and len(ma200.dropna()) > 20:
+            m2 = ma200.dropna()
+            out[tk]['mm200'] = round(float(m2.iloc[-1]), 2)
+            out[tk]['dist_mm200_pct'] = round(float(p.iloc[-1] / m2.iloc[-1] - 1) * 100, 2)
+            out[tk]['pendiente_mm200'] = 'ascendente' if m2.iloc[-1] > m2.iloc[-21] else 'descendente'
+            _enc = (p[m2.index] > m2).values
+            _s = 1
+            for i in range(len(_enc) - 2, -1, -1):
+                if _enc[i] == _enc[-1]: _s += 1
+                else: break
+            out[tk]['estado_mm200'] = 'sobre' if _enc[-1] else 'bajo'
+            out[tk]['sesiones_estado_mm200'] = int(_s)
     if out:
         partes = [f"{tk} {v['estado']} MM50 ({v['dist_pct']:+}%, {v['sesiones_en_estado']}s)" for tk, v in out.items()]
         alertas = [tk for tk, v in out.items() if v['alerta']]
         print('  Indices vs MM50: ' + ' | '.join(partes) +
               (' | ⚠️ ' + ', '.join(alertas) if alertas else ' | sin eventos'))
+        print('  P104 indices vs MM200: ' + ' | '.join(
+            f"{tk} {v.get('estado_mm200','?')} MM200 ({v.get('dist_mm200_pct', 0):+}%, "
+            f"{v.get('sesiones_estado_mm200','?')}s, pendiente {v.get('pendiente_mm200','?')})"
+            for tk, v in out.items() if 'mm200' in v))
     return out
 
 def get_macro_data():
     try:
-        tickers = ['^VIX', 'DX-Y.NYB', '^TNX']
+        tickers = ['^VIX', 'DX-Y.NYB', '^TNX', '^VIX3M']   # P104: + VIX a 3 meses
         # P101 — SPY entra en la MISMA descarga solo como reloj: su ultima fila con dato es la
         # ultima sesion cerrada (o la de hoy, si se ejecuta en plena sesion). Ver _calc_macro_regimen.
         raw = yf.download(tickers + ['SPY'], period='5d', interval='1d',
@@ -1032,7 +1051,7 @@ def get_macro_data():
                     except Exception as _e:
                         _traza('macro/recorte-sesion', _e)
                 if len(serie):
-                    _nombre = {'^VIX': 'VIX', 'DX-Y.NYB': 'DXY', '^TNX': 'US10Y'}[tk]
+                    _nombre = {'^VIX': 'VIX', 'DX-Y.NYB': 'DXY', '^TNX': 'US10Y', '^VIX3M': 'VIX3M'}[tk]
                     _filas.append(f"{_nombre} {pd.Timestamp(serie.index[-1]).date()}"
                                   + (f" (descartada {', '.join(_desc)})" if _desc else ''))
                 if len(serie) >= 2:
@@ -1049,6 +1068,22 @@ def get_macro_data():
                                   'fecha': str(pd.Timestamp(serie.index[-1]).date())}   # P101
         # P101 — linea SIEMPRE presente con la fecha de la fila usada para cada serie.
         print(f'  P101 filas macro (sesion {_sesion or "sin referencia"}): ' + ' | '.join(_filas))
+        # P104 (08/11/2026) — ESTRUCTURA TEMPORAL DEL VIX: VIX / VIX a 3 meses. Por encima de 1,
+        # la proteccion a corto plazo es mas cara que a largo (curva invertida): señal clasica
+        # de estres agudo. El 05/11 la mesa de Goldman la describia «fuertemente invertida» y
+        # el scanner no podia verlo. Linea SIEMPRE presente.
+        try:
+            _v, _v3 = result.get('^VIX', {}).get('current'), result.get('^VIX3M', {}).get('current')
+            if _v and _v3:
+                _r = round(_v / _v3, 3)
+                result['vix_estructura'] = {'vix': _v, 'vix3m': _v3, 'ratio': _r,
+                                            'invertida': bool(_r > 1.0)}
+                print(f'  P104 estructura VIX: VIX {_v} / VIX3M {_v3} = {_r} '
+                      + ('(INVERTIDA: estres agudo)' if _r > 1.0 else '(normal, en contango)'))
+            else:
+                print('  P104 estructura VIX: sin dato de VIX3M')
+        except Exception as _e:
+            _traza('macro/vix-estructura', _e)
         # Si ^TNX no devolvió datos, intentar ^TYX (otro ticker del bono 10a en Yahoo)
         if '^TNX' not in result:
             try:
@@ -1694,8 +1729,15 @@ def calc_supertrend(high, low, close, period=10, multiplier=3):
         for i in range(n - 2, -1, -1):
             if direccion[i] == dir_final: dias_dir += 1
             else: break
+        # P104 (08/11/2026) — el dia del giro, el nivel VIGENTE ya es la banda contraria (en un
+        # giro bajista, la banda superior, POR ENCIMA del precio): «ha cruzado por debajo de
+        # $X» con ese X era falso. Se guarda tambien la banda que el cierre cruzo de verdad.
+        nivel_cruzado = None
+        if dias_dir == 1 and n >= 2:
+            nivel_cruzado = round(float(banda_inf_final[-2] if dir_final == 'bajista'
+                                        else banda_sup_final[-2]), 2)
         return {'nivel': round(nivel, 2), 'direccion': dir_final,
-                'dias_en_direccion_actual': int(dias_dir)}
+                'dias_en_direccion_actual': int(dias_dir), 'nivel_cruzado': nivel_cruzado}
     except Exception as _e:
         _traza('calc_supertrend', _e)
         return None
@@ -2220,7 +2262,7 @@ def _evento_ya_publicado(nombre, dias_habiles, ahora_ny):
         return False
     return ahora_ny.hour >= HORA_PUBLICACION_ET[clave]
 
-def check_eventos_macro(umbral_dias=2, hoy=None, ahora=None):
+def check_eventos_macro(umbral_dias=2, hoy=None, ahora=None, sesion_procesada=None):
     """Eventos macro programados en los proximos `umbral_dias` dias habiles
     (incluido hoy: un evento esta mañana antes de la apertura sigue siendo riesgo
     para posiciones abiertas esta noche). `hoy` y `ahora` inyectables para tests.
@@ -2238,11 +2280,21 @@ def check_eventos_macro(umbral_dias=2, hoy=None, ahora=None):
         hoy = pd.Timestamp(hoy).normalize()
     proximos = []
     ultima_fecha = pd.Timestamp('1900-01-01')
+    # P104 (08/11/2026) — un evento del DIA DE LA SESION PROCESADA desaparecia: la programada
+    # corre de madrugada del dia siguiente, la fecha ya es «pasado» y el FOMC del 28/10 o el
+    # NFP del 06/11 se esfumaban del informe sin decir que habian ocurrido. Solo con el reloj
+    # real (sin `hoy` inyectado por un test).
+    _ses_proc = None
+    if sesion_procesada is not None:
+        _ses_proc = pd.Timestamp(sesion_procesada).normalize()
     for evento, fechas in get_calendario_macro().items():
         for f in fechas:
             fecha = pd.Timestamp(f)
             ultima_fecha = max(ultima_fecha, fecha)
             if fecha < hoy:
+                if _ses_proc is not None and fecha == _ses_proc:
+                    proximos.append({'evento': evento, 'fecha': str(fecha.date()), 'dias_habiles': 0,
+                                     'ya_publicado': True, 'en_sesion_procesada': True})
                 continue
             dias_habiles = max(0, len(pd.bdate_range(hoy, fecha)) - 1)
             if dias_habiles <= umbral_dias:
@@ -2264,15 +2316,18 @@ def formato_eventos_macro_summary(eventos):
     if pendientes:
         s += '\nEVENTOS MACRO PROGRAMADOS PROXIMOS (riesgo de gap a escala de mercado):\n'
         for e in pendientes:
-            cuando = 'HOY, AUN POR PUBLICAR' if e['dias_habiles'] == 0 else f"en {e['dias_habiles']} dia(s) habil(es)"
+            cuando = ('HOY, AUN POR PUBLICAR' if e['dias_habiles'] == 0 else
+                      f"en {e['dias_habiles']} dia(s) habil(es) — escribe la fecha exacta; NO digas 'mañana' ni 'pasado mañana'")   # P104
             s += f"- {e['evento']}: {e['fecha']} ({cuando})\n"
     # PUNTO 51 — un evento ya publicado NO es riesgo de gap: es contexto de lo que ya
     # ha movido los precios de esta sesion. Se separa para que el informe deje de
     # recomendar esperar a un dato consumado.
     if publicados:
-        s += '\nEVENTOS MACRO YA PUBLICADOS HOY (el dato YA esta en los precios de esta sesion):\n'
+        s += '\nEVENTOS MACRO YA PUBLICADOS (el dato YA esta en los precios de la sesion procesada):\n'
         for e in publicados:
-            s += f"- {e['evento']}: {e['fecha']} — YA PUBLICADO\n"
+            s += (f"- {e['evento']}: {e['fecha']} — YA PUBLICADO"
+                  + (' durante la sesion procesada; el sistema NO conoce el resultado, no lo inventes' if e.get('en_sesion_procesada') else '')
+                  + '\n')
         s += ('NO recomiendes esperar a estos datos ni los presentes como riesgo de gap pendiente: '
               'ya han ocurrido. Si el movimiento de la sesion es coherente con ellos, dilo; si no '
               'dispones de la cifra concreta, limitate a señalar que la sesion ya los incorpora.\n')
@@ -2901,6 +2956,8 @@ def construir_entradas_resoluciones(resoluciones, fecha_panel):
         })
         if r.get('stop_con_hueco'):
             salida[-1]['stop_con_hueco'] = True    # P102
+        if r.get('fecha_resolucion') and (r.get('precio_resolucion') or r.get('resultado') == 'caducado'):
+            salida[-1]['metodo'] = 'p102'          # P104: precio de la orden, no cierre
         if r.get('recuperada_p101'):
             salida[-1]['recuperada_p101'] = True   # P101
     return salida
@@ -2910,9 +2967,20 @@ def merge_resoluciones(rh, entradas, max_entradas=5000):
     es la buena y no se reescribe en ejecuciones posteriores."""
     rh = [e for e in (rh or []) if isinstance(e, dict)]
     vistos = {(e.get('fecha_setup'), e.get('ticker')) for e in rh}
+    _pos = {(e.get('fecha_setup'), e.get('ticker')): i for i, e in enumerate(rh)}
     for entrada in (entradas or []):
         clave = (entrada.get('fecha_setup'), entrada.get('ticker'))
         if clave in vistos:
+            # P104 (08/11/2026) — RECALIBRACION: una fila guardada antes del P102 (retorno al
+            # cierre del dia de deteccion) se sustituye por la del P102 (precio de la orden), y
+            # se conserva el valor antiguo para trazabilidad. Solo una vez por fila.
+            _i = _pos.get(clave)
+            if (_i is not None and entrada.get('metodo') == 'p102'
+                    and rh[_i].get('metodo') != 'p102'):
+                _nueva = dict(entrada)
+                _nueva['ret_pct_anterior'] = rh[_i].get('ret_pct')
+                _nueva['recalibrada_p104'] = True
+                rh[_i] = _nueva
             continue
         vistos.add(clave)
         rh.append(entrada)
@@ -2968,8 +3036,12 @@ def anotar_resoluciones(evaluaciones, macro, ts):
         # intactos (los usa la persistencia, y para una resolucion nueva son correctos: el
         # primer dia detectado ES el dia de la resolucion). Si la resolucion es de hoy, no hay
         # entrada previa y los campos congelados valen lo mismo que los vivos.
-        r['ret_pct_resolucion'] = _prev.get('ret_pct', r.get('ret_pct'))
-        r['precio_resolucion'] = _prev.get('precio_actual', r.get('precio_resolucion') or r.get('precio_actual'))  # P102
+        # P104 — si el resultado es definitivo (P102), manda su retorno congelado, no el que se
+        # guardo antes con el cierre del dia de deteccion (informe y log daban cifras distintas).
+        r['ret_pct_resolucion'] = (r.get('ret_pct') if r.get('fecha_resolucion')
+                                   else _prev.get('ret_pct', r.get('ret_pct')))
+        r['precio_resolucion'] = (r.get('precio_resolucion') if r.get('fecha_resolucion') and r.get('precio_resolucion')
+                                  else _prev.get('precio_actual', r.get('precio_resolucion') or r.get('precio_actual')))  # P102/P104
         dias = _dias_habiles_entre(r['fecha_deteccion'], fecha_panel)
         r['dias_desde_deteccion'] = dias
         r['reciente'] = (dias is None) or (dias <= DIAS_RESOLUCION_RECIENTE)
@@ -4101,14 +4173,33 @@ def bloque_macro(data):
         partes_idx = []
         for tk in ('SPY', 'QQQ'):
             v = idx50.get(tk, {})
-            if not v.get('alerta'): continue
-            if v.get('cruce_reciente'):
+            if not v: continue
+            # P104 (08/11/2026) — la linea va SIEMPRE, no solo con cruce o test. Con el silencio
+            # por codigo el QQQ desaparecio del informe siete veces seguidas, incluido el 05/11
+            # (-6,4%, por debajo de su MM200): la regla del prompt prohibia mencionarlo si la
+            # linea no aparecia. No era desobediencia del modelo: era el dato que faltaba.
+            if not v.get('alerta'):
+                detalle = f"{'sobre' if v['estado']=='sobre' else 'bajo'} su MM50"
+            elif v.get('cruce_reciente'):
                 detalle = f"ha cruzado {'por encima de' if v['estado']=='sobre' else 'por debajo de'} su MM50 hace {v['sesiones_en_estado']} sesion(es)"
             else:
                 detalle = f"testando su MM50 como {'soporte' if v['estado']=='sobre' else 'resistencia'}"
-            partes_idx.append(f"{tk}: {detalle} (MM50 ${v['mm50']}, precio a {v['dist_pct']:+}%, {v['estado']} desde hace {v['sesiones_en_estado']} sesiones)")
+            _t = (f"{tk}: {detalle} (MM50 ${v['mm50']}, precio a {v['dist_pct']:+}%, {v['estado']} desde hace {v['sesiones_en_estado']} sesiones)")
+            if v.get('mm200') is not None:
+                _t += (f"; MM200 ${v['mm200']}, precio a {v['dist_mm200_pct']:+}% "
+                       f"({v.get('estado_mm200')} desde hace {v.get('sesiones_estado_mm200')} sesiones), "
+                       f"pendiente de la MM200 {v.get('pendiente_mm200')}")
+                if v.get('estado_mm200') == 'sobre' and v['dist_mm200_pct'] < 2.0:
+                    _t += f" — ALERTA: {tk} A MENOS DEL 2% DE SU MM200"
+            partes_idx.append(_t)
         if partes_idx:
-            macro_txt += '- ESTRUCTURA DE INDICES (MM50, tactico): ' + ' | '.join(partes_idx) + '\n'
+            macro_txt += '- ESTRUCTURA DE INDICES (MM50 tactico y MM200 de largo plazo): ' + ' | '.join(partes_idx) + '\n'
+        # P104 — estructura temporal del VIX
+        _ve = macro.get('vix_estructura') or {}
+        if _ve.get('ratio') is not None:
+            macro_txt += (f"- ESTRUCTURA DEL VIX: VIX {_ve['vix']} / VIX a 3 meses {_ve['vix3m']} = {_ve['ratio']} — "
+                          + ('INVERTIDA: la proteccion a corto plazo es mas cara que a largo, señal de estres agudo\n'
+                             if _ve.get('invertida') else 'normal (en contango)\n'))
         macro_txt += '\n'
     return macro_txt
 
@@ -4303,7 +4394,10 @@ def bloque_seguimiento(data):
                 if dias_st is not None and dias_st > 1:
                     flags.append(f'SUPERTREND BAJISTA PERSISTENTE desde hace {dias_st} sesiones(nivel:${a.get("supertrend_nivel")})')
                 else:
-                    flags.append(f'SUPERTREND BAJISTA NUEVO — ruptura de esta sesion(nivel:${a.get("supertrend_nivel")})')
+                    _cz = a.get('supertrend_nivel_cruzado')
+                    flags.append(f'SUPERTREND BAJISTA NUEVO — ruptura de esta sesion: el cierre cruzo por debajo de '
+                                 f'${_cz}' if _cz is not None else 'SUPERTREND BAJISTA NUEVO — ruptura de esta sesion')
+                    flags[-1] += f' (nuevo nivel vigente, ya por encima del precio: ${a.get("supertrend_nivel")})'   # P104
             summary += (f'- {a["ticker"]}: setup del {a["fecha_setup"]} ({a["dias"]}d) | '
                         f'Ret: {a["ret_pct"]}% | {" + ".join(flags)} | Estado: {a["resultado"]}\n')
         summary += '\n'
@@ -4648,7 +4742,7 @@ def recolectar_datos_candidatos(valid, fundamentales):
                     fundamentales.setdefault(tk, {}).update(campos)
 
     # PUNTO 23 — eventos macro programados proximos (riesgo de gap de mercado)
-    eventos_macro = check_eventos_macro()
+    eventos_macro = check_eventos_macro(sesion_procesada=_BREADTH_CACHE.get('ultima_sesion'))   # P104
 
     # PUNTO 17 — correlacion entre los candidatos finales (concentracion de cartera).
     # Se calcula sobre los mismos <=5 setups que van al informe; si el cache no esta
@@ -4778,7 +4872,41 @@ def construir_prompt(data, externos=None):
             f'sesion son los datos y advirtiendo de que el mercado ha podido moverse desde '
             f'entonces; no presentes estas cifras como la foto de hoy ni describas los '
             f'movimientos como si fueran de la ultima sesion.\n\n')
-    summary=(f'DATOS — {ts}\nSPY sobre MM200: {"SI" if spy_ok else "NO"}\n\n'
+    # P104 (08/11/2026) — D9: la tendencia de largo plazo como DATO, no como etiqueta.
+    _m = data.get('macro', {}) or {}
+    _spy_i = (_m.get('indices_mm50') or {}).get('SPY') or {}
+    if _spy_i.get('mm200') is not None:
+        _cab_spy = (f"TENDENCIA DE LARGO PLAZO DEL SPY: precio a {_spy_i['dist_mm200_pct']:+}% de su MM200 "
+                    f"(${_spy_i['mm200']}), MM200 con pendiente {_spy_i.get('pendiente_mm200')}")
+    else:
+        _cab_spy = f'SPY sobre MM200: {"SI" if spy_ok else "NO"}'
+    # P104 — D9: MODO ESTRES. Si coinciden tres o mas señales de estres, el informe abre con
+    # ellas. Origen: el 05/11 el informe abria con «regimen de fondo alcista» y «rally
+    # respaldado» con el put/call en el percentil 2 y el credito en el 98; horas despues, -3%.
+    _estres = []
+    try:
+        _vx = _m.get('^VIX') or {}
+        if (_vx.get('current') or 0) >= 25: _estres.append(f"VIX en {_vx.get('current')}")
+        elif (_vx.get('chg_pct') or 0) >= 20: _estres.append(f"VIX +{_vx.get('chg_pct')}% en la sesion")
+        _rg = _m.get('regimen') or {}
+        if (_rg.get('credito_oas') or {}).get('alerta') or (_rg.get('credito_hyg_ief') or {}).get('alerta'):
+            _estres.append('credito en alerta')
+        if _spy_i.get('estado') == 'bajo': _estres.append('SPY bajo su MM50')
+        _qqq_i = (_m.get('indices_mm50') or {}).get('QQQ') or {}
+        if _qqq_i.get('estado_mm200') == 'bajo': _estres.append('QQQ bajo su MM200')
+        _br = data.get('breadth') or {}
+        if (_br.get('mcclellan') is not None) and _br['mcclellan'] < 0: _estres.append(f"McClellan {_br['mcclellan']}")
+        if _br.get('avance') and _br.get('descenso') and _br['descenso'] >= 2 * _br['avance']:
+            _estres.append(f"avance/descenso {_br['avance']}/{_br['descenso']}")
+    except Exception as _e:
+        _traza('prompt/modo-estres', _e)
+    _txt_estres = ''
+    if len(_estres) >= 3:
+        _txt_estres = ('MODO ESTRES — ' + str(len(_estres)) + ' SEÑALES COINCIDEN: ' + '; '.join(_estres) +
+                       '. ABRE la seccion MERCADO con estas señales; la tendencia de largo plazo va DESPUES, como contexto.\n')
+    print(f"  P104 modo estres: {len(_estres)} señal(es)" + (f": {'; '.join(_estres)}" if _estres else '')
+          + (' -> ACTIVO' if len(_estres) >= 3 else ''))
+    summary=(f'DATOS — {ts}\n{_cab_spy}\n{_txt_estres}\n'
              + _aviso_sesion + macro_txt + breadth_txt + 'FUERTES:\n')
     for g in strong[:5]:
         leaders=', '.join(m['ticker']+'('+str(m['score'])+')' for m in g['top3'])
@@ -4897,8 +5025,8 @@ def construir_prompt(data, externos=None):
         'Estructura: 1.MERCADO 2.TEMAS PRIORITARIOS 3.ENTRADAS(niveles exactos) 4.EXTENDIDOS 5.CONCLUSION. La CONCLUSION es OBLIGATORIO que termine con un parrafo separado titulado exactamente **RIESGOS DEL ESCENARIO** que liste en 3-4 puntos concisos que condiciones invalidarian la tesis alcista actual: perdida de MM200 por SPY, perdida de liderazgo sectorial, VIX elevado, deterioro de amplitud de mercado, resultados empresariales negativos proximos. Este parrafo NO es opcional. '
         'PUNTO 8 — AMPLITUD DE MERCADO: si el bloque AMPLITUD DE MERCADO aparece en los datos, usalo en la seccion MERCADO para matizar el regimen general (SPY>MM200 es una sola variable; la amplitud dice si ese movimiento esta respaldado por la mayoria de valores o solo por unos pocos). Interpreta los datos asi: % sobre MM50/MM200 por debajo del 50% mientras el SPY esta alcista indica un "rally estrecho" (pocos valores liderando, mercado fragil bajo la superficie); % por encima del 60-70% indica amplitud sana. Si nuevos minimos de 52 semanas superan a los nuevos maximos, es una señal de deterioro interno aunque el indice general suba. Esta informacion es CONTEXTO, no debe usarse para invalidar ni recalcular el RIESGO de los setups individuales (que depende solo de SCT/RSI/CMF/ADX del valor) — su unico rol es matizar la lectura del regimen de mercado en la seccion 1 y, si aplica, dar contenido especifico y verificable al punto de "deterioro de amplitud de mercado" en RIESGOS DEL ESCENARIO en lugar de mencionarlo de forma generica. '
         'ALERTAS DE REGIMEN MACRO: las lineas "ALERTA DE REGIMEN" solo aparecen en los datos cuando un umbral de VELOCIDAD se ha disparado (US30Y: ±25 pb en 20 sesiones o cruce del 5.00%; WTI: ±10% en 20 sesiones; CREDITO: el diferencial OAS high-yield de ICE BofA ampliandose 50 pb o mas en 20 sesiones, o en nivel extremo — es el sensor adelantado de aversion al riesgo mas fiable de este bloque, porque el credito suele estresarse antes que la renta variable; si FRED no responde se usa como respaldo el ratio HYG/IEF, que cae cuando el credito se tensiona, es decir con el signo CONTRARIO al del OAS — usa en cada caso la lectura de direccion que venga escrita en la propia linea de alerta y no la deduzcas tu). Si aparecen, integralas en la seccion 1 (MERCADO) y en RIESGOS DEL ESCENARIO aplicando el mapa de transmision sectorial: tipos largos subiendo con fuerza presionan los sectores de duracion larga (biotech sin beneficios, tecnologia de multiplo alto) y favorecen relativamente a las financieras; petroleo subiendo con fuerza favorece a energia y presiona a transporte, aerolineas y consumo discrecional; credito tensionandose da mas valor relativo a los setups de calidad y defensivos (utilities, telecos, salud, basicos) frente a los de beta alta. Usa el mapa para contextualizar los setups del dia cuando la alerta afecte a sus sectores, sin forzarlo cuando no aplique. Cada linea trae DOS ventanas: el cambio en 20 sesiones (el regimen) y el cambio de hoy (la tactica del dia) — pueden divergir (ej.: crudo cayendo un 20% en el mes pero repuntando hoy por geopolitica) y en ese caso debes reflejar ambas, con el regimen como lectura principal y el movimiento del dia como matiz. Estas alertas describen el REGIMEN actual, no predicen la proxima sesion: nunca las conviertas en pronosticos. Si NO aparece ninguna linea de ALERTA DE REGIMEN, tienes PROHIBIDO mencionar el bono a 30 años, el petroleo o el credito high-yield en el informe — ni siquiera para decir que estan estables o sin cambios: el silencio es la señal de normalidad y el comentario macro de relleno esta prohibido. '
-        'ESTRUCTURA DE INDICES (MM50): la linea "ESTRUCTURA DE INDICES" solo aparece cuando el SPY o el QQQ han cruzado su media movil de 50 sesiones recientemente o estan testandola (±1%). Es contexto TACTICO de corto plazo, distinto del regimen (que sigue siendo la MM200): un indice rebotando en su MM50 con la MM200 alcista es una correccion normal dentro de tendencia; un indice bajo su MM50 durante muchas sesiones indica que el tramo tactico es debil aunque el regimen aguante. Integralo en la seccion 1 (MERCADO) en una o dos frases, y conectalo con los setups del dia cuando aplique (ej.: si los setups son pullbacks a MM50 individuales el mismo dia que el indice testa la suya, es una correccion sincronizada de mercado — nombrable como contexto, ni mejor ni peor per se). Si la linea NO aparece, tienes PROHIBIDO mencionar las medias de 50 sesiones de los indices — el silencio es normalidad. Nunca lo conviertas en pronostico. '
-        'PUNTO 10 — SEGUIMIENTO CMF + SUPERTREND: si aparece el bloque "SEGUIMIENTO — ALERTAS" en los datos, anyadelo como una seccion separada ENTRE la seccion 4 (EXTENDIDOS) y la CONCLUSION, titulada exactamente "SEGUIMIENTO DE POSICIONES ABIERTAS". Distingue claramente DOS niveles de urgencia, nunca los trates igual: (A) si un ticker lleva la marca "CMF NEGATIVO N SESIONES CONSECUTIVAS", es una señal blanda pero ya CONFIRMADA: no es un mal dia aislado, el flujo lleva N sesiones seguidas en terreno vendedor (distribucion sostenida) — la regla es valorar reducir el tamaño de la posicion a la mitad hasta que el CMF recupere terreno positivo. Cuanto mayor sea N, mas asentada esta la distribucion, pero la REGLA OPERATIVA ES LA MISMA para todas las alertas blandas independientemente de N: valorar reducir al 50%. NUNCA degrades las rachas cortas (3-5 sesiones) a "vigilar sin reducir" ni inventes niveles intermedios de urgencia dentro de las blandas — si una alerta aparece en los datos es porque ya cumple el minimo de confirmacion del sistema, y las rachas cortas en posiciones muy ganadoras son precisamente los giros de flujo mas frescos y accionables, no los menos urgentes. (B) si un ticker lleva la marca SUPERTREND BAJISTA, es una señal dura y mas urgente: el precio cotiza por debajo del nivel de Supertrend VIGENTE (indicado en la marca), lo que significa que la estructura de tendencia que sostenia el setup ya se ha roto — no es "vigilar", es una señal de salida total de la posicion, mas decisiva que la alerta CMF. Las señales son EXCLUYENTES por diseño: la dura absorbe a la blanda (nunca veras ambas en el mismo ticker, y nunca debes sugerir a la vez "reducir 50%" y "salida total" para un mismo valor). Ademas, AMBOS tipos de alerta corresponden UNICAMENTE a condiciones surgidas DESPUES de la entrada del setup: las rupturas Supertrend son posteriores a la entrada, y las rachas de CMF negativo empezaron tras la entrada — los setups que ya nacieron con el Supertrend bajista o con el CMF en negativo no generan alerta (no tiene sentido "salir" o "reducir" por una condicion que ya existia al entrar), asi que toda alerta que veas es un deterioro genuinamente nuevo sobre la posicion. Dentro del caso (B) los datos distinguen DOS variantes que NUNCA debes redactar igual: "SUPERTREND BAJISTA NUEVO — ruptura de esta sesion" significa que la direccion ha cambiado a bajista precisamente en la sesion mas reciente — es el caso mas urgente de actuar y puedes redactarlo como ruptura del dia ("ha cruzado por debajo..."). "SUPERTREND BAJISTA PERSISTENTE desde hace N sesiones" significa que la ruptura NO es de hoy: lleva N sesiones activa y el precio simplemente no ha recuperado el nivel necesario para revertirla — NUNCA lo redactes como si la ruptura acabara de producirse; indica explicitamente desde cuando esta rota la tendencia ("Supertrend bajista desde hace N sesiones") y ajusta el framing: la decision de salida ya deberia haberse tomado en su momento, la mencion actual es un recordatorio de que la estructura sigue rota, no una alerta urgente de esta sesion. ATENCION AL NIVEL (P90): el nivel de la marca es el Supertrend VIGENTE hoy, que en tendencia bajista se desplaza cada sesion; NO es el precio al que se produjo la ruptura. En los casos PERSISTENTES tienes PROHIBIDO escribir "ha cruzado por debajo de $X" o "el precio ha cruzado por debajo del nivel dinamico": redactalo como "cotiza por debajo de su Supertrend vigente ($X)". Un dia con subida fuerte puede coexistir con Supertrend bajista persistente si el cierre no ha cruzado el nivel indicado — no lo presentes como contradiccion, es el diseño del indicador. Si hay mas de 10 alertas en total, agrupa: menciona primero los casos con SUPERTREND BAJISTA (los mas urgentes, hasta 5), luego los 3-5 casos de CMF mas relevantes por retorno, y resume el resto en una frase tipo "otros N valores con distribucion confirmada — misma regla de reduccion al 50%". Cita siempre el retorno actual (ret_pct). Si no hay alertas, no incluyas esta seccion. Seccion operativa, no analitica. '
+        'ESTRUCTURA DE INDICES (P104): la linea "ESTRUCTURA DE INDICES" aparece SIEMPRE y trae, para el SPY y el QQQ, su posicion frente a la MM50 (tactico) y frente a la MM200 (largo plazo), con distancias y sesiones. Es OBLIGATORIO mencionar en la seccion 1 (MERCADO) la situacion de AMBOS indices frente a las DOS medias, con sus distancias en %. Si el QQQ esta bajo su MM200, dilo expresamente. Si aparece "ALERTA: ... A MENOS DEL 2% DE SU MM200", destacalo: el margen de la tendencia de largo plazo es estrecho. Un indice rebotando en su MM50 con la MM200 ascendente es una correccion normal dentro de tendencia; un indice bajo su MM50 durante muchas sesiones indica que el tramo tactico es debil. Nunca lo conviertas en pronostico. TENDENCIA DE LARGO PLAZO (P104): PROHIBIDO usar las expresiones «regimen alcista», «regimen de fondo alcista», «regimen bajista» o equivalentes. Describe la tendencia de largo plazo SOLO con el dato de la cabecera: «el SPY esta un X% por encima (o por debajo) de su MM200, cuya pendiente es ascendente/descendente». La distancia es la informacion; el adjetivo no. MODO ESTRES (P104): si al principio de los datos aparece una linea "MODO ESTRES", la seccion 1 (MERCADO) DEBE abrir enumerando esas señales con sus cifras; la tendencia de largo plazo del SPY va despues, como contexto, nunca como primera frase. ESTRUCTURA DEL VIX (P104): si la linea "ESTRUCTURA DEL VIX" dice INVERTIDA, mencionala en MERCADO como señal de estres agudo (la proteccion a corto plazo cuesta mas que a largo); si dice normal, no hace falta mencionarla. '
+        'PUNTO 10 — SEGUIMIENTO CMF + SUPERTREND: si aparece el bloque "SEGUIMIENTO — ALERTAS" en los datos, anyadelo como una seccion separada ENTRE la seccion 4 (EXTENDIDOS) y la CONCLUSION, titulada exactamente "SEGUIMIENTO DE POSICIONES ABIERTAS". Distingue claramente DOS niveles de urgencia, nunca los trates igual: (A) si un ticker lleva la marca "CMF NEGATIVO N SESIONES CONSECUTIVAS", es una señal blanda pero ya CONFIRMADA: no es un mal dia aislado, el flujo lleva N sesiones seguidas en terreno vendedor (distribucion sostenida) — la regla es valorar reducir el tamaño de la posicion a la mitad hasta que el CMF recupere terreno positivo. Cuanto mayor sea N, mas asentada esta la distribucion, pero la REGLA OPERATIVA ES LA MISMA para todas las alertas blandas independientemente de N: valorar reducir al 50%. NUNCA degrades las rachas cortas (3-5 sesiones) a "vigilar sin reducir" ni inventes niveles intermedios de urgencia dentro de las blandas — si una alerta aparece en los datos es porque ya cumple el minimo de confirmacion del sistema, y las rachas cortas en posiciones muy ganadoras son precisamente los giros de flujo mas frescos y accionables, no los menos urgentes. (B) si un ticker lleva la marca SUPERTREND BAJISTA, es una señal dura y mas urgente: el precio cotiza por debajo del nivel de Supertrend VIGENTE (indicado en la marca), lo que significa que la estructura de tendencia que sostenia el setup ya se ha roto — no es "vigilar", es una señal de salida total de la posicion, mas decisiva que la alerta CMF. Las señales son EXCLUYENTES por diseño: la dura absorbe a la blanda (nunca veras ambas en el mismo ticker, y nunca debes sugerir a la vez "reducir 50%" y "salida total" para un mismo valor). Ademas, AMBOS tipos de alerta corresponden UNICAMENTE a condiciones surgidas DESPUES de la entrada del setup: las rupturas Supertrend son posteriores a la entrada, y las rachas de CMF negativo empezaron tras la entrada — los setups que ya nacieron con el Supertrend bajista o con el CMF en negativo no generan alerta (no tiene sentido "salir" o "reducir" por una condicion que ya existia al entrar), asi que toda alerta que veas es un deterioro genuinamente nuevo sobre la posicion. Dentro del caso (B) los datos distinguen DOS variantes que NUNCA debes redactar igual: "SUPERTREND BAJISTA NUEVO — ruptura de esta sesion" significa que la direccion ha cambiado a bajista precisamente en la sesion mas reciente — es el caso mas urgente de actuar y puedes redactarlo como ruptura del dia ("ha cruzado por debajo...") — usando el nivel que la marca indica como CRUZADO, no el «nuevo nivel vigente», que tras el giro ya queda por encima del precio (P104). "SUPERTREND BAJISTA PERSISTENTE desde hace N sesiones" significa que la ruptura NO es de hoy: lleva N sesiones activa y el precio simplemente no ha recuperado el nivel necesario para revertirla — NUNCA lo redactes como si la ruptura acabara de producirse; indica explicitamente desde cuando esta rota la tendencia ("Supertrend bajista desde hace N sesiones") y ajusta el framing: la decision de salida ya deberia haberse tomado en su momento, la mencion actual es un recordatorio de que la estructura sigue rota, no una alerta urgente de esta sesion. ATENCION AL NIVEL (P90): el nivel de la marca es el Supertrend VIGENTE hoy, que en tendencia bajista se desplaza cada sesion; NO es el precio al que se produjo la ruptura. En los casos PERSISTENTES tienes PROHIBIDO escribir "ha cruzado por debajo de $X" o "el precio ha cruzado por debajo del nivel dinamico": redactalo como "cotiza por debajo de su Supertrend vigente ($X)". Un dia con subida fuerte puede coexistir con Supertrend bajista persistente si el cierre no ha cruzado el nivel indicado — no lo presentes como contradiccion, es el diseño del indicador. Si hay mas de 10 alertas en total, agrupa: menciona primero los casos con SUPERTREND BAJISTA (los mas urgentes, hasta 5), luego los 3-5 casos de CMF mas relevantes por retorno, y resume el resto en una frase tipo "otros N valores con distribucion confirmada — misma regla de reduccion al 50%". Cita siempre el retorno actual (ret_pct). Si no hay alertas, no incluyas esta seccion. Seccion operativa, no analitica. '
         'Escribe cada seccion de forma que sea comprensible tanto para un analista tecnico como para un inversor adulto con conocimientos generales de bolsa pero sin experiencia en analisis tecnico. '
         'No uses parrafos separados ni marcadores especiales para las explicaciones: integra el contexto y el significado directamente en el texto de cada seccion. '
         'Cuando menciones un indicador tecnico (RSI, ADX, SCT, CMF, MM50, etc.) explica brevemente en la misma frase que implica ese valor concreto para la decision. '
@@ -4916,7 +5044,7 @@ def construir_prompt(data, externos=None):
         '(B) MENCION POR NOTICIAS: si un setup NO incluye el aviso estructurado (earnings_accion distinto de "avisar") pero el campo NOTICIAS trae un titular sobre resultados/earnings preview, SI puedes mencionarlo, pero unicamente como contexto informativo suave, nunca con el lenguaje de riesgo de gap ni "el stop no protege" — esa redaccion esta reservada en exclusiva al caso (A). Para el caso (B) usa un tono tipo "hay cobertura de prensa sobre el proximo informe de resultados, aun a varias semanas vista" o equivalente, sin instar a reducir tamaño ni a esperar al informe, ya que el propio sistema ya evaluo que el evento no esta dentro de la ventana de riesgo inminente. Si tienes el dato dias_earnings disponible, puedes citarlo para contextualizar cuanto falta ("la fecha de resultados aun queda a unas N semanas"). '
         'En cualquier caso que no sea (A) ni (B) — es decir, si no hay aviso estructurado NI titular de noticias sobre earnings — NO menciones earnings, resultados, ni ninguna variante tipo "vigilar fechas de resultados" en ese setup bajo ningun concepto, ni siquiera como cautela generica de buena practica: citar earnings sin que ningun dato lo respalde es tan grave como inventar un motivo de RIESGO falso, y esta PROHIBIDO. '
         'Si aparecen tickers en la lista "DESCARTADOS POR EARNINGS INMINENTE", debes mencionarlos brevemente en EXTENDIDOS o en una nota aparte como candidatos tecnicamente validos pero descartados por proximidad de resultados, indicando SIEMPRE los dias y la fecha exacta de earnings tal y como aparecen en los datos (ej. "earnings en 3 dias, el 2026-06-20") — nunca los menciones sin esa fecha concreta, y nunca les asignes niveles de entrada. Si un setup tiene noticias recientes sin relacion con earnings (campo NOTICIAS), incorpora el titular mas relevante de forma natural en el texto si aporta contexto util (catalizador, riesgo, confirmacion), sin listarlas todas mecanicamente. '
-        'Cada setup valido incluye un objetivo PARCIAL (resistencia inmediata, primera toma de beneficios parcial) y un objetivo FINAL (techo tecnico acotado a R/B 1:5 maximo). Menciona ambos: el parcial como punto donde valorar asegurar parte de la posicion, el final como objetivo de cierre completo. '
+        'Cada setup valido incluye un objetivo PARCIAL (primera toma de beneficios parcial: la resistencia inmediata o, si esa resistencia queda a menos de 1R del limite alto de la entrada, el nivel de 1R —P102—; NO lo describas siempre como resistencia) y un objetivo FINAL (techo tecnico acotado a R/B 1:5 maximo). Menciona ambos: el parcial como punto donde valorar asegurar parte de la posicion, el final como objetivo de cierre completo. '
         'Ejemplos de tono correcto: '
         '"IONQ cotiza con RSI en 65, zona de momentum optimo sin sobrecompra, y ADX en 42, lo que confirma que la tendencia alcista tiene solidez suficiente para nuevas entradas." '
         '"El SCT de 78 sobre 100 indica que varios indicadores tecnicos apuntan en la misma direccion, lo que reduce el riesgo de una senal falsa." '
@@ -4937,7 +5065,7 @@ def construir_prompt(data, externos=None):
         'ORDEN OBLIGATORIO: presenta los setups en la seccion ENTRADAS y en la tabla EXACTAMENTE en el orden en que aparecen en los datos, que es el del RANKING de mayor a menor. NO los reordenes por tu propio criterio ni los agrupes por sector o por tipo. Si un candidato bien clasificado tiene un riesgo particular (RSI alto, resultados cerca, Supertrend roto), dilo en su parrafo y en la conclusion, pero sin cambiar su posicion. '
         'PUNTO 17 — CORRELACION ENTRE CANDIDATOS: si aparece el bloque CORRELACION ENTRE CANDIDATOS, usalo para evaluar la CARTERA como conjunto, no cada idea aislada. Correlacion >=0.70 entre dos candidatos significa que en la practica son una sola apuesta con dos nombres: si ambos se toman, la diversificacion real es menor de lo que aparenta y una misma sorpresa macro (tipos, growth, sector) golpea a la vez a ambos. Las betas indican la sensibilidad de cada candidato al mercado: beta agregada alta = cartera que amplifica al SPY. Integra esta lectura en un parrafo breve dentro de la CONCLUSION (o en RIESGOS DEL ESCENARIO si hay AVISO CONCENTRACION), nombrando los pares concretos y su correlacion. Si hay CONCENTRACION SECTORIAL (dos o mas candidatos del mismo tema), menciona que comparten motor sectorial. Esta informacion es CONTEXTO DE CARTERA: NO invalida ni recalcula el RIESGO ni el RANKING individual de ningun setup, y NO debe usarse para descartar candidatos — solo para advertir sobre tomarlos simultaneamente y sugerir, si aplica, dimensionar posiciones considerando la correlacion. Si el bloque no aparece, no menciones correlaciones. '
         'PUNTO 18 — PULLBACK EN SOBRECOMPRA: si un setup lleva la marca AVISO: PULLBACK CON RSI EN SOBRECOMPRA, significa que el valor cotiza cerca de su media movil de referencia PERO su RSI sigue >=70: el retroceso ha sido tan superficial que no ha aliviado la sobrecompra, por lo que hablar de "pullback de calidad" no es convincente. Redactalo con ese matiz explicito (retroceso minimo, momentum aun sobrecalentado, mayor probabilidad de que la correccion no haya terminado) y evita presentarlo como una entrada de libro en soporte. La marca NO cambia el RIESGO ni el RANKING calculados — es un matiz de calidad del setup que el lector debe conocer. Si ningun setup lleva la marca, no menciones este concepto. '
-        'PUNTO 19/31 — DESGLOSE DEL RANKING: cada setup incluye junto al RANKING su desglose entre parentesis (SCT x/40 + R/B x/20 + sector x/20 + CMF x/20; los cuatro componentes suman exactamente el ranking). El componente SECTOR (hasta 20 puntos) refleja desde el 01/08/2026 el % de valores del sector que cotizan sobre su MM200: un sector donde el 80% de sus miembros estan sobre la MM200 puntua 16/20 (0.80 × 20); el componente es una medida de fortaleza estructural del sector, no de calidad tecnica individual. Usalo cuando compares candidatos entre si: un setup con sector x/20 alto tiene el viento del sector de cola; uno con sector bajo compite contra corriente. No recites el desglose completo de cada setup — usalo para fundamentar comparaciones concretas. NUNCA inventes pesos ni componentes distintos de los cuatro dados. '
+        'PUNTO 19/31 — DESGLOSE DEL RANKING (pesos desde el P103, 07/11/2026): cada setup incluye junto al RANKING su desglose entre parentesis (SCT x/50 + sector x/25 + CMF x/25; los tres componentes suman exactamente el ranking). El R/B YA NO PUNTUA en el ranking: solo es un filtro (minimo 1:2). El componente SECTOR (hasta 25 puntos) refleja el % de valores del sector que cotizan sobre su MM200: un sector con el 80% de sus miembros sobre la MM200 puntua 20/25 (0.80 × 25); mide fortaleza estructural del sector, no calidad tecnica individual. Usalo cuando compares candidatos entre si. No recites el desglose completo de cada setup — usalo para fundamentar comparaciones concretas. NUNCA inventes pesos ni componentes distintos de los tres dados. '
         'PUNTO 21 — PUT/CALL DE CBOE: si aparece el bloque PUT/CALL DE CBOE, integra el ratio EQUITY en la lectura de mercado de la seccion 1, en una frase, junto a la amplitud y al VIX: son las tres piezas del estado interno del mercado. Es un indicador de sentimiento CONTRARIO y de CONTEXTO: describe el clima, no genera ni modifica setups, y NUNCA recalcula el RIESGO ni el RANKING de nadie. Usa la lectura de direccion tal y como viene resuelta en el bloque y no la deduzcas tu. Si el bloque avisa de que la serie propia es demasiado corta para dar contexto historico, tienes PROHIBIDO calificar el valor de alto, bajo, extremo, historico o inusual, y tambien compararlo con periodos que no esten en los datos: limitate a decir el nivel y lo que significa su direccion. PERO si el bloque SI trae la linea de percentil, es OBLIGATORIO citarlo: el percentil es lo unico que permite situar el valor de hoy, y describir el nivel sin el desaprovecha el dato. Cita tambien la VARIACION frente a la sesion anterior cuando aparezca, con la direccion tal y como viene escrita: un salto grande en una sola sesion suele ser mas informativo que el nivel, y un ratio que SUBE es sentimiento moviendose hacia el miedo aunque el nivel siga siendo bajo. Cuando el sentimiento contradiga a la amplitud (por ejemplo complacencia en opciones con amplitud deteriorandose), señalalo — pero SOLO si la calificacion del bloque dice COMPLACENCIA o MIEDO; con calificacion NEUTRAL no hay divergencia de sentimiento que señalar: esa divergencia es justo lo que aporta el indicador. Si el bloque no aparece, no menciones put/call ni sentimiento de opciones. '
         'PUNTO 20 — AMPLITUD TACTICA (MM20 y McClellan): el % sobre MM20 es la version rapida de la amplitud — reacciona en dias, no en semanas: si es claramente inferior al % sobre MM50, la participacion de corto plazo se esta enfriando aunque la estructura de fondo aguante; si lo supera con claridad, hay reaceleracion tactica. El McClellan Oscillator (ratio-adjusted) mide el MOMENTO de la amplitud: positivo = el empuje neto comprador domina, negativo = domina el vendedor, y el cruce de 0 marca el giro; lecturas mas alla de aproximadamente +/-50 indican empuje amplio posiblemente sobreextendido a corto plazo (no es señal operativa, es contexto). Integra ambos en la lectura de AMPLITUD DE MERCADO de la seccion 1 (una o dos frases), coherente con el resto de metricas de amplitud: divergencias entre la amplitud rapida (MM20/McClellan) y la lenta (MM50/MM200) son el matiz mas valioso que puedes señalar. NO recalcules ni modules el RIESGO de setups individuales con estos datos. '
         'PUNTO 23 — EVENTOS MACRO PROGRAMADOS: si aparece el bloque EVENTOS MACRO PROGRAMADOS PROXIMOS, tratalo como la version a escala de mercado del aviso de earnings: son citas binarias (FOMC, IPC, NFP) capaces de provocar gaps de apertura que NINGUN stop tecnico protege, y afectan a todas las posiciones a la vez, no a un ticker. Menciona el evento y su fecha en la seccion de contexto de mercado y añade una frase de prudencia operativa sobre las ENTRADAS NUEVAS (considerar esperar al evento o reducir tamaño si el horizonte del trade lo cruza), con mas enfasis cuanto mas cerca este (HOY o 1 dia habil = maxima cautela). NO recalcules el RIESGO ni el RANKING de setups individuales, NO especules sobre el resultado del evento ni sobre la direccion del mercado tras el dato, y si el bloque no aparece, no menciones eventos macro programados. '
@@ -5732,6 +5860,7 @@ def update_setups_history(values, all_groups):
             st_nivel = st.get('nivel') if st else None
             st_direccion = st.get('direccion') if st else None
             st_dias = st.get('dias_en_direccion_actual') if st else None
+            st_cruzado = st.get('nivel_cruzado') if st else None   # P104
             es_bajista_abierto = (resultado == 'abierto' and st_direccion == 'bajista')
             if es_bajista_abierto and st_dias is not None:
                 ruptura_posterior = st_dias < sesiones_desde_setup
@@ -5806,6 +5935,7 @@ def update_setups_history(values, all_groups):
                 'alerta_cmf':  alerta_cmf,
                 'cmf_pre_negativo': cmf_pre_negativo,
                 'supertrend_nivel':     st_nivel,
+                'supertrend_nivel_cruzado': st_cruzado,   # P104
                 'supertrend_direccion': st_direccion,
                 'supertrend_dias':      st_dias,
                 'alerta_supertrend':    alerta_supertrend,
