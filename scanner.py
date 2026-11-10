@@ -319,6 +319,12 @@ def calc_market_breadth(universe_close, bench_close):
             validez = ultimo.notna() & max_52s.notna() & min_52s.notna()
             result['nuevos_max_52s'] = int((ultimo[validez] >= max_52s[validez]).sum())
             result['nuevos_min_52s'] = int((ultimo[validez] <= min_52s[validez]).sum())
+            # P105 (10/11/2026) — % de valores a mas de un 20% de su maximo de 52 semanas. Mide
+            # algo que el % sobre medias no capta: un valor puede estar un 20% por debajo de su
+            # maximo y a la vez sobre su MM200 si se esta recuperando (nota de Goldman, 03/11).
+            if validez.sum() > 0:
+                _dist = ultimo[validez] / max_52s[validez] - 1
+                result['pct_20_bajo_max52'] = round(float((_dist <= -0.20).mean()) * 100, 1)
 
         # Avance / descenso: variacion del ultimo valor valido de cada ticker vs su valor
         # valido anterior (ffill antes de pct_change evita que una fila reciente incompleta
@@ -2781,6 +2787,7 @@ def _texto_putcall():
     if eq is not None and len(hist) >= MIN_SESIONES_PUTCALL:
         _serie_pc = [e['equity'] for e in hist]
         _pct_pc = round(100.0 * sum(1 for v in _serie_pc if v <= eq) / len(_serie_pc), 1)
+        _PUTCALL_CACHE['percentil'] = _pct_pc   # P105 — para el modo estres
     if eq is not None and _pct_pc is not None:
         if _pct_pc <= 25:
             _cal = 'COMPLACENCIA relativa (ratio en el cuartil bajo de su propia serie)'
@@ -4224,6 +4231,10 @@ def bloque_amplitud(data):
             f'- % de valores por encima de su MM200: {breadth["pct_sobre_mm200"]}%\n'
             f'- Nuevos maximos de 52 semanas: {breadth.get("nuevos_max_52s","?")} | '
             f'Nuevos minimos de 52 semanas: {breadth.get("nuevos_min_52s","?")}\n'
+            + (f'- % de valores a mas de un 20% de su maximo de 52 semanas: {breadth.get("pct_20_bajo_max52")}% '
+               f'(distancia al maximo; NO es lo mismo que estar bajo las medias: un valor puede estar lejos de su '
+               f'maximo y en recuperacion a la vez)\n' if breadth.get('pct_20_bajo_max52') is not None else '') +
+            f''
             f'- Avance/Descenso (sesion actual): {breadth.get("avance","?")} valores suben, '
             f'{breadth.get("descenso","?")} bajan\n'
             f'- McClellan Oscillator (ratio-adjusted): {breadth.get("mcclellan","?")}\n'
@@ -4630,6 +4641,11 @@ def bloque_setups(valid, fundamentales):
                         f'{_st_c.get("dias_en_direccion_actual", "?")} sesiones, nivel '
                         f'{_st_c.get("nivel", "?")}): si fuera una posicion abierta seria señal de '
                         f'salida total — MENCIONARLO OBLIGATORIAMENTE en la entrada de este valor')
+        # P105 — peor hueco de apertura del ultimo año
+        _phc = v.get('peor_hueco_1a')
+        if _phc and _phc.get('pct') is not None and _phc['pct'] <= -8:
+            summary += (f" | PEOR HUECO DE APERTURA EN 1 AÑO: {_phc['pct']}% el {_phc['fecha']} — "
+                        f"el stop no protege de un hueco asi: citalo como referencia para dimensionar")
         # Datos fundamentales si disponibles
         fund = fundamentales.get(v['ticker'], {})
         if fund:
@@ -4735,11 +4751,31 @@ def recolectar_datos_candidatos(valid, fundamentales):
         for tk, campos in extra_data.items():
             if campos:
                 fundamentales.setdefault(tk, {}).update(campos)
-        if FMP_KEY:
-            fmp_data = get_fundamentales_fmp(tickers_setups)
-            for tk, campos in fmp_data.items():
-                if campos:
-                    fundamentales.setdefault(tk, {}).update(campos)
+        # P105 (10/11/2026) — D11-a: FMP RETIRADO. El plan gratuito restringe por simbolo y
+        # cubria 0-2 de 5 candidatos (0/5 el 04/11 y el 07/11): coste de llamadas y de lineas
+        # de log sin dato util. La funcion get_fundamentales_fmp se conserva sin llamarse.
+        print('  P105 FMP retirado: ROIC y serie EPS trimestral ya no se consultan')
+        # P105 — PEOR HUECO DE APERTURA del ultimo año por candidato (fase 3): referencia para
+        # dimensionar por el hueco posible y no solo por la distancia al stop.
+        try:
+            _hx = yf.download(tickers_setups, period='1y', interval='1d', auto_adjust=True,
+                              progress=False, threads=True)
+            if not _hx.empty:
+                _op = _hx['Open'] if isinstance(_hx.columns, pd.MultiIndex) else _hx[['Open']].rename(columns={'Open': tickers_setups[0]})
+                _cl = _hx['Close'] if isinstance(_hx.columns, pd.MultiIndex) else _hx[['Close']].rename(columns={'Close': tickers_setups[0]})
+                _ph = []
+                for v in valid_final:
+                    tk = v['ticker']
+                    if tk not in _op.columns: continue
+                    _g = (_op[tk] / _cl[tk].shift(1) - 1).dropna()
+                    if len(_g):
+                        _d = _g.idxmin()
+                        v['peor_hueco_1a'] = {'pct': round(float(_g.min()) * 100, 1),
+                                              'fecha': str(pd.Timestamp(_d).date())}
+                        _ph.append(f"{tk} {v['peor_hueco_1a']['pct']}% ({v['peor_hueco_1a']['fecha']})")
+                print('  P105 peor hueco de apertura (1 año): ' + (' | '.join(_ph) if _ph else 'sin datos'))
+        except Exception as _e:
+            _traza('candidatos/peor-hueco', _e)
 
     # PUNTO 23 — eventos macro programados proximos (riesgo de gap de mercado)
     eventos_macro = check_eventos_macro(sesion_procesada=_BREADTH_CACHE.get('ultima_sesion'))   # P104
@@ -4883,29 +4919,40 @@ def construir_prompt(data, externos=None):
     # P104 — D9: MODO ESTRES. Si coinciden tres o mas señales de estres, el informe abre con
     # ellas. Origen: el 05/11 el informe abria con «regimen de fondo alcista» y «rally
     # respaldado» con el put/call en el percentil 2 y el credito en el 98; horas despues, -3%.
-    _estres = []
+    # P105 (10/11/2026) — las señales se separan en LENTAS (credito, que llega con 1-2 dias de
+    # retraso, e indices bajo sus medias) y DEL DIA (VIX, McClellan, avance/descenso, put/call).
+    # El 10/11 el modo salto con tres lentas el dia que el SPX subio un 2,35% y 437 valores
+    # subian frente a 79: abrir con «prudencia maxima» era desproporcionado. Ahora exige tres
+    # señales Y al menos una del dia. Con la regla nueva, el 05/11 habria saltado igual.
+    _estres, _frescas = [], []
     try:
         _vx = _m.get('^VIX') or {}
-        if (_vx.get('current') or 0) >= 25: _estres.append(f"VIX en {_vx.get('current')}")
-        elif (_vx.get('chg_pct') or 0) >= 20: _estres.append(f"VIX +{_vx.get('chg_pct')}% en la sesion")
+        if (_vx.get('current') or 0) >= 25: _frescas.append(f"VIX en {_vx.get('current')}")
+        elif (_vx.get('chg_pct') or 0) >= 20: _frescas.append(f"VIX +{_vx.get('chg_pct')}% en la sesion")
+        _br = data.get('breadth') or {}
+        if (_br.get('mcclellan') is not None) and _br['mcclellan'] < 0: _frescas.append(f"McClellan {_br['mcclellan']}")
+        if _br.get('avance') and _br.get('descenso') and _br['descenso'] >= 2 * _br['avance']:
+            _frescas.append(f"avance/descenso {_br['avance']}/{_br['descenso']}")
+        _ppc = _PUTCALL_CACHE.get('percentil')
+        if _ppc is not None and (_ppc >= 90 or _ppc <= 10):
+            _frescas.append(f"put/call en el percentil {_ppc}")
         _rg = _m.get('regimen') or {}
         if (_rg.get('credito_oas') or {}).get('alerta') or (_rg.get('credito_hyg_ief') or {}).get('alerta'):
             _estres.append('credito en alerta')
         if _spy_i.get('estado') == 'bajo': _estres.append('SPY bajo su MM50')
         _qqq_i = (_m.get('indices_mm50') or {}).get('QQQ') or {}
         if _qqq_i.get('estado_mm200') == 'bajo': _estres.append('QQQ bajo su MM200')
-        _br = data.get('breadth') or {}
-        if (_br.get('mcclellan') is not None) and _br['mcclellan'] < 0: _estres.append(f"McClellan {_br['mcclellan']}")
-        if _br.get('avance') and _br.get('descenso') and _br['descenso'] >= 2 * _br['avance']:
-            _estres.append(f"avance/descenso {_br['avance']}/{_br['descenso']}")
+        _estres = _frescas + _estres
     except Exception as _e:
         _traza('prompt/modo-estres', _e)
     _txt_estres = ''
-    if len(_estres) >= 3:
+    if len(_estres) >= 3 and _frescas:
         _txt_estres = ('MODO ESTRES — ' + str(len(_estres)) + ' SEÑALES COINCIDEN: ' + '; '.join(_estres) +
                        '. ABRE la seccion MERCADO con estas señales; la tendencia de largo plazo va DESPUES, como contexto.\n')
-    print(f"  P104 modo estres: {len(_estres)} señal(es)" + (f": {'; '.join(_estres)}" if _estres else '')
-          + (' -> ACTIVO' if len(_estres) >= 3 else ''))
+    print(f"  P105 modo estres: {len(_estres)} señal(es), {len(_frescas)} del dia"
+          + (f": {'; '.join(_estres)}" if _estres else '')
+          + (' -> ACTIVO' if (len(_estres) >= 3 and _frescas) else
+             (' -> NO activo: ninguna señal es de la sesion' if len(_estres) >= 3 else '')))
     summary=(f'DATOS — {ts}\n{_cab_spy}\n{_txt_estres}\n'
              + _aviso_sesion + macro_txt + breadth_txt + 'FUERTES:\n')
     for g in strong[:5]:
@@ -6547,6 +6594,7 @@ def main():
               f'Avance/Descenso: {breadth["avance"]}/{breadth["descenso"]} | '
               f'Nuevos max/min 52s: {breadth["nuevos_max_52s"]}/{breadth["nuevos_min_52s"]} | '
               f'McClellan: {breadth.get("mcclellan","?")} | MM200 SPY: {breadth["pendiente_mm200_spy"]}')
+        print(f'  P105 a mas de un 20% de su maximo de 52 semanas: {breadth.get("pct_20_bajo_max52","?")}% de los valores')
     else:
         print('  Amplitud no disponible (datos insuficientes)')
 
