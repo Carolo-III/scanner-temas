@@ -52,6 +52,69 @@ from datetime import datetime, timedelta
 HORIZONTES = (5, 10, 20)
 SEP = '=' * 78
 
+# --------------------------------------------------------------------------
+# EPISODIOS (21/11/2026)
+# --------------------------------------------------------------------------
+# El registro da de alta un setup NUEVO cada sesion en que un valor vuelve a cumplir
+# las condiciones: UPS figuraba 12 veces entre el 02 y el 18/11, con 23 ocurrencias
+# vivas el 20/11. La clave (fecha_setup, ticker) cuenta cada repeticion como una
+# operacion distinta: infla la n entre 2 y 2,7 veces con observaciones que no son
+# independientes. Medido el 21/11 sobre resoluciones_history: 1.088 resoluciones son
+# 544 episodios; la media apenas cambia (-3,16% frente a -3,31%), la n si.
+#
+# Episodio = mismo ticker con altas separadas como mucho por HUECO_EPISODIO dias
+# HABILES; cuenta una vez, con la fecha de su PRIMERA alta (la entrada que de verdad
+# se habria podido tomar). Por defecto el analisis va por episodios; --crudo
+# reproduce el comportamiento anterior.
+HUECO_EPISODIO = 3
+
+
+def _habiles_entre(a, b):
+    """Dias habiles (lunes a viernes) de a (excluido) a b (incluido)."""
+    da = datetime.strptime(a, '%Y-%m-%d').date()
+    db = datetime.strptime(b, '%Y-%m-%d').date()
+    n = 0
+    while da < db:
+        da += timedelta(days=1)
+        if da.weekday() < 5:
+            n += 1
+    return n
+
+
+def inicios_de_episodio(apariciones):
+    """apariciones: iterable de (fecha_setup, ticker). Devuelve un dict que asigna a cada
+    aparicion la (fecha, ticker) de la PRIMERA alta de su episodio."""
+    por_ticker = defaultdict(set)
+    for f, t in apariciones:
+        if f and t:
+            por_ticker[t].add(f)
+    episodio_de = {}
+    for t, fechas in por_ticker.items():
+        previa = inicio = None
+        for f in sorted(fechas):
+            if previa is None or _habiles_entre(previa, f) > HUECO_EPISODIO:
+                inicio = f
+            episodio_de[(f, t)] = (inicio, t)
+            previa = f
+    return episodio_de
+
+
+def filtrar_episodios(registros, episodio_de):
+    """Deja, por episodio, solo los registros de la alta MAS TEMPRANA presente en esta
+    lista. No exige que sea la primera alta del episodio: antes del P101 (05/11) solo se
+    persistia una resolucion por valor, a veces de una alta posterior, y exigir la
+    primera tiraria episodios enteros (medido: 1.088 resoluciones caian a 413 en vez de
+    a ~544). Los checkpoints de una misma alta (5/10/20 sesiones) se conservan juntos."""
+    mejor = {}
+    for r in registros:
+        clave = (r.get('fecha_setup'), r.get('ticker'))
+        ep = episodio_de.get(clave, clave)
+        if ep not in mejor or (clave[0] or '') < (mejor[ep] or ''):
+            mejor[ep] = clave[0]
+    return [r for r in registros
+            if mejor.get(episodio_de.get((r.get('fecha_setup'), r.get('ticker')),
+                                         (r.get('fecha_setup'), r.get('ticker')))) == r.get('fecha_setup')]
+
 
 # --------------------------------------------------------------------------
 # Carga
@@ -554,6 +617,8 @@ def main():
     ap = argparse.ArgumentParser(description='Analisis de rendimiento del scanner')
     ap.add_argument('--dir', default='.', help='directorio con los .json (por defecto: actual)')
     ap.add_argument('--sin-spy', action='store_true', help='omite la descarga del benchmark')
+    ap.add_argument('--crudo', action='store_true',
+                    help='cuenta cada alta repetida como un setup distinto (comportamiento anterior al 21/11/2026)')
     args = ap.parse_args()
 
     print()
@@ -574,6 +639,29 @@ def main():
     if not checkpoints:
         print('\n  Sin checkpoints: no hay nada que analizar. Comprueba la ruta con --dir.')
         return
+
+    # Episodios: las apariciones salen del registro completo si existe (es el unico que
+    # conserva todas las altas); si no, de lo que haya en checkpoints y resoluciones.
+    registro = cargar(args.dir, 'setups_registro.json', [])
+    registro = [r for r in registro if isinstance(r, dict)] if isinstance(registro, list) else []
+    apariciones = {(r.get('fecha_setup'), r.get('ticker')) for r in registro + checkpoints + resoluciones}
+    inicios = inicios_de_episodio(apariciones)   # aparicion -> episodio
+    n_chk, n_res = len({(c.get('fecha_setup'), c.get('ticker')) for c in checkpoints}), len(resoluciones)
+    print(SEP)
+    print('0. MODO DE RECUENTO')
+    print(SEP)
+    print(f'  Altas distintas (fecha, ticker): {len(apariciones)} | episodios: {len(set(inicios.values()))} '
+          f'(hueco maximo {HUECO_EPISODIO} dias habiles; fuente: '
+          f'{"setups_registro" if registro else "checkpoints + resoluciones"})')
+    if args.crudo:
+        print('  MODO CRUDO: cada alta repetida cuenta como un setup distinto. La n esta inflada.')
+    else:
+        checkpoints = filtrar_episodios(checkpoints, inicios)
+        resoluciones = filtrar_episodios(resoluciones, inicios)
+        print(f'  MODO EPISODIOS (por defecto): setups con checkpoints {n_chk} -> '
+              f'{len({(c.get("fecha_setup"), c.get("ticker")) for c in checkpoints})}; '
+              f'resoluciones {n_res} -> {len(resoluciones)}. Usa --crudo para el recuento anterior.')
+    print()
 
     fechas = seccion_cobertura(checkpoints, resoluciones, setups_hist)
 
